@@ -15,3 +15,9 @@ dirs = "~5.0.1"
 clippers = "~0.1.2"
 rand = "~0.8.5"
 rand_chacha = "~0.3.1"
+
+[dev-dependencies]
+assert_cmd = "~2.0.16"
+assert_fs = "~1.1.2"
+assertables = "~9.5.0"
+predicates = "~3.1.3"

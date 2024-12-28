@@ -159,3 +159,15 @@ pub fn generate_password(length: usize, charset: String) -> String {
         .map(|_| charset[rng.gen_range(0..charset.len())])
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use assertables::assert_len_eq_x;
+    use super::*;
+
+    #[test]
+    fn generate() {
+        let pw = generate_password(16, "0123456789".to_string());
+        assert_len_eq_x!(pw, 16);
+    }
+}
