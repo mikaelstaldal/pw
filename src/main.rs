@@ -84,7 +84,9 @@ fn main() -> Result<ExitCode, anyhow::Error> {
         }
         Commands::Get { name } => {
             let entry = pw::get(&file, name)?;
-            println!("{}", entry.username);
+            if !entry.username.is_empty() {
+                println!("{}", entry.username);
+            }
             let mut clipboard = clippers::Clipboard::get();
             clipboard.write_text(entry.password)?;
         }
