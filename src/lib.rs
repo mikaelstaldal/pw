@@ -9,6 +9,7 @@ use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use rand_chacha::ChaCha20Rng;
 
 #[derive(thiserror::Error, Debug)]
 pub enum PwError {
@@ -154,7 +155,7 @@ fn write(file: &Path, data: &Vec<PasswordEntry>) -> Result<(), PwError> {
 
 pub fn generate_password(length: usize, charset: String) -> String {
     let charset: Vec<char> = charset.chars().collect();
-    let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
+    let mut rng = ChaCha20Rng::from_entropy();
     (0..length)
         .map(|_| charset[rng.gen_range(0..charset.len())])
         .collect()
