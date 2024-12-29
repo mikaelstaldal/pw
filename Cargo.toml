@@ -9,12 +9,14 @@ license = "Apache-2.0"
 serde = { version = "~1.0.216", features = ["derive"] }
 serde_json = "1.0.134"
 thiserror = "~2.0.9"
-anyhow = "~1.0.95"
-clap = { version = "~4.5.23", features = ["derive"] }
-dirs = "~5.0.1"
-clippers = "~0.1.2"
 rand = "~0.8.5"
 rand_chacha = "~0.3.1"
+
+# bin dependencies
+anyhow = "~1.0.95"
+clap = { version = "~4.5.23", features = ["derive"] }
+clippers = "~0.1.2"
+dirs = "~5.0.1"
 
 [dev-dependencies]
 assert_cmd = "~2.0.16"
