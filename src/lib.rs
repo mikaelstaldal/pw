@@ -19,8 +19,8 @@ pub enum PwError {
     FileAlreadyExists(String),
     #[error("Scrypt error")]
     ScryptError(),
-    #[error("Invalid JSON {0}")]
-    InvalidJson(String, #[source] serde_json::Error),
+    #[error("Invalid JSON")]
+    InvalidJson(#[source] serde_json::Error),
     #[error("Password not found")]
     NotFound(),
     #[error("Password already exists")]
@@ -124,10 +124,7 @@ fn read(file: &Path) -> Result<Vec<PasswordEntry>, PwError> {
     }
 
     serde_json::from_slice(&output.stdout).map_err(|err| {
-        InvalidJson(
-            String::from_utf8(output.stdout).unwrap_or(String::from("")),
-            err,
-        )
+        InvalidJson(err)
     })
 }
 
@@ -141,7 +138,7 @@ fn write(file: &Path, data: &Vec<PasswordEntry>) -> Result<(), PwError> {
         .expect("failed to start scrypt");
 
     if let Some(stdin) = command.stdin.as_mut() {
-        serde_json::to_writer(stdin, data).map_err(|err| InvalidJson(String::from(""), err))?;
+        serde_json::to_writer(stdin, data).map_err(|err| InvalidJson(err))?;
     }
 
     let status = command.wait().expect("failed to run scrypt");
