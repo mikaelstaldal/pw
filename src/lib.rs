@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use rand_chacha::ChaCha20Rng;
+#[cfg(unix)]
+use std::fs::Permissions;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 #[derive(thiserror::Error, Debug)]
 pub enum PwError {
@@ -145,6 +149,12 @@ fn write(file: &Path, data: &Vec<PasswordEntry>) -> Result<(), PwError> {
 
     if !status.success() {
         return Err(ScryptError().into());
+    }
+
+    #[cfg(unix)]
+    {
+        std::fs::set_permissions(file, Permissions::from_mode(0o600))
+            .expect("failed to set file permissions");
     }
 
     Ok(())
