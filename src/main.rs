@@ -21,8 +21,15 @@ struct Cli {
     password_length: u8,
 
     /// Password charset
-    #[arg(long, default_value = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")]
+    #[arg(
+        long,
+        default_value = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+    )]
     password_charset: String,
+
+    /// Password charset
+    #[arg(long)]
+    input_password: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -31,8 +38,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Create an empty encrypted passwords file
-    Init {
-    },
+    Init {},
 
     /// Lookup a password
     Get {
@@ -41,8 +47,7 @@ enum Commands {
     },
 
     /// List all passwords
-    List {
-    },
+    List {},
 
     /// Add a password
     Add {
@@ -67,8 +72,7 @@ enum Commands {
     },
 
     /// Generates a password without storing it
-    Generate {
-    },
+    Generate {},
 }
 
 fn main() -> Result<ExitCode, anyhow::Error> {
@@ -81,7 +85,7 @@ fn main() -> Result<ExitCode, anyhow::Error> {
     });
 
     match &cli.command {
-        Commands::Init { } => {
+        Commands::Init {} => {
             pw::init(&file)?;
             println!("{} initialized", file.display());
         }
@@ -93,40 +97,52 @@ fn main() -> Result<ExitCode, anyhow::Error> {
             let mut clipboard = Clipboard::get();
             clipboard.write_text(entry.password)?;
         }
-        Commands::List { } => {
+        Commands::List {} => {
             let entries = pw::list(&file)?;
             for entry in entries {
                 println!("{}: {}", entry.name, entry.username);
             }
         }
         Commands::Add { name, username } => {
-            let password = pw::generate_password(
-                cli.password_length as usize, cli.password_charset);
-            pw::add(&file, pw::PasswordEntry {
-                name: name.clone(),
-                username: username.clone(),
-                password: password.clone(),
-            })?;
+            let password = if cli.input_password {
+                rpassword::prompt_password("Password to save: ")?
+            } else {
+                pw::generate_password(cli.password_length as usize, cli.password_charset)
+            };
+            pw::add(
+                &file,
+                pw::PasswordEntry {
+                    name: name.clone(),
+                    username: username.clone(),
+                    password: password.clone(),
+                },
+            )?;
             let mut clipboard = Clipboard::get();
             clipboard.write_text(password)?;
         }
         Commands::Update { name, username } => {
-            let password = pw::generate_password(
-                cli.password_length as usize, cli.password_charset);
-            pw::update(&file, pw::PasswordEntry {
-                name: name.clone(),
-                username: username.clone(),
-                password: password.clone(),
-            })?;
+            let password = if cli.input_password {
+                rpassword::prompt_password("Password to save: ")?
+            } else {
+                pw::generate_password(cli.password_length as usize, cli.password_charset)
+            };
+            pw::update(
+                &file,
+                pw::PasswordEntry {
+                    name: name.clone(),
+                    username: username.clone(),
+                    password: password.clone(),
+                },
+            )?;
             let mut clipboard = Clipboard::get();
             clipboard.write_text(password)?;
         }
         Commands::Remove { name } => {
             pw::remove(&file, name)?;
         }
-        Commands::Generate { } => {
-            let password = pw::generate_password(
-                cli.password_length as usize, cli.password_charset);
+        Commands::Generate {} => {
+            let password =
+                pw::generate_password(cli.password_length as usize, cli.password_charset);
             let mut clipboard = Clipboard::get();
             clipboard.write_text(password)?;
         }
