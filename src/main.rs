@@ -27,7 +27,7 @@ struct Cli {
     )]
     password_charset: String,
 
-    /// Password charset
+    /// Type the password to save, instead of generate one
     #[arg(long)]
     input_password: bool,
 
