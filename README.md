@@ -21,16 +21,16 @@ pw list                      # show all entries
 
 ## Commands
 
-| Command | Description |
-|---|---|
-| `pw init` | Create a new empty vault. Asks for the passphrase twice. |
-| `pw get <name> [--show]` | Copy the password to the clipboard, or print it with `--show`. Prints the username first, if there is one. |
-| `pw list [PATTERN]` | List entries, optionally filtered by a case-insensitive substring of the name. |
-| `pw add <name> [username] [options]` | Add an entry. The password is generated (and copied to the clipboard) unless `--input-password` is given. |
-| `pw update <name> [username] [options]` | Replace the username and password of an existing entry. |
-| `pw remove <name> [--yes]` | Remove an entry, after confirmation (`--yes` skips it). |
-| `pw generate [options]` | Generate a password without storing it. |
-| `pw export` | Print the decrypted vault as JSON on stdout, for backup or migration. |
+| Command                                 | Description                                                                                                |
+|-----------------------------------------|------------------------------------------------------------------------------------------------------------|
+| `pw init`                               | Create a new empty vault. Asks for the passphrase twice.                                                   |
+| `pw get <name> [--show]`                | Copy the password to the clipboard, or print it with `--show`. Prints the username first, if there is one. |
+| `pw list [PATTERN]`                     | List entries, optionally filtered by a case-insensitive substring of the name.                             |
+| `pw add <name> [username] [options]`    | Add an entry. The password is generated (and copied to the clipboard) unless `--input-password` is given.  |
+| `pw update <name> [username] [options]` | Replace the username and password of an existing entry.                                                    |
+| `pw remove <name> [--yes]`              | Remove an entry, after confirmation (`--yes` skips it).                                                    |
+| `pw generate [options]`                 | Generate a password without storing it.                                                                    |
+| `pw export`                             | Print the decrypted vault as JSON on stdout, for backup or migration.                                      |
 
 Options for `add`, `update` and `generate`:
 
@@ -75,7 +75,9 @@ which prints the JSON above. `pw export` does the same from within `pw`.
 
 Writes are atomic (write-to-temp, fsync, rename), and the previous version of
 the vault is kept as `pw.scrypt.bak` next to it. A crash mid-write can never
-leave a truncated vault.
+leave a truncated vault. The temporary file is always `pw.scrypt.tmp` next to
+the vault, so a sandbox policy such as AppArmor only needs to allow
+`pw.scrypt`, `pw.scrypt.tmp` and `pw.scrypt.bak`.
 
 ## Security notes
 
@@ -86,3 +88,5 @@ leave a truncated vault.
   copied; `pw` tells you whenever it writes to the clipboard.
 - Secrets are zeroized in memory when no longer needed, and never appear in
   debug output.
+- You can use the `apparmor-profile` file as a template for an Apparmor profile, you need to substitute 
+  `${PATH_TO_EXECUTABLE}` with absolute paths. This has only been tested on Ubuntu Linux.

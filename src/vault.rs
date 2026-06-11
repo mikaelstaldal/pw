@@ -115,11 +115,16 @@ pub fn load(file: &Path, passphrase: &Passphrase) -> Result<Vec<PasswordEntry>, 
 
 /// Encrypt and write the vault atomically.
 ///
-/// The ciphertext goes to a temporary file in the same directory (created
-/// `0o600` by `tempfile` on Unix) which is fsynced and then renamed over the
-/// target; an existing vault is first copied to `<file>.bak`. A crash at any
-/// point leaves the target as either the complete old or the complete new
-/// vault, never truncated.
+/// The ciphertext goes to `<file>.tmp` (created exclusively, `0o600` on
+/// Unix) which is fsynced and then renamed over the target; an existing
+/// vault is first copied to `<file>.bak`. A crash at any point leaves the
+/// target as either the complete old or the complete new vault, never
+/// truncated.
+///
+/// The temporary file must live next to the target (the rename may not
+/// cross filesystems), and its name is deterministic so sandbox policies
+/// (e.g. AppArmor) can allow exactly `<file>`, `<file>.tmp` and
+/// `<file>.bak` instead of a wildcard.
 pub fn store(
     file: &Path,
     passphrase: &Passphrase,
@@ -137,30 +142,54 @@ pub fn store(
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
     };
+    let tmp_path = temp_path(file);
 
-    let mut tmp = tempfile::Builder::new()
-        .prefix(".pw-")
-        .tempfile_in(dir)
-        .map_err(write_err)?;
-    tmp.write_all(&ciphertext).map_err(write_err)?;
-    tmp.as_file().sync_all().map_err(write_err)?;
-
-    if file.exists() {
-        let bak = backup_path(file);
-        fs::copy(file, &bak).map_err(write_err)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&bak, fs::Permissions::from_mode(0o600)).map_err(write_err)?;
-        }
+    // Remove a stale temp file from a crashed previous run, then create
+    // exclusively so an existing file (or symlink) is never followed.
+    match fs::remove_file(&tmp_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(write_err(e)),
+    }
+    let mut open_options = fs::OpenOptions::new();
+    open_options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open_options.mode(0o600);
     }
 
-    tmp.persist(file).map_err(|e| write_err(e.error))?;
-    #[cfg(unix)]
-    fs::File::open(dir)
-        .and_then(|d| d.sync_all())
-        .map_err(write_err)?;
-    Ok(())
+    let result = (|| {
+        let mut tmp = open_options.open(&tmp_path)?;
+        tmp.write_all(&ciphertext)?;
+        tmp.sync_all()?;
+
+        if file.exists() {
+            let bak = backup_path(file);
+            fs::copy(file, &bak)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&bak, fs::Permissions::from_mode(0o600))?;
+            }
+        }
+
+        fs::rename(&tmp_path, file)?;
+        #[cfg(unix)]
+        fs::File::open(dir).and_then(|d| d.sync_all())?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    result.map_err(write_err)
+}
+
+/// `<file>.tmp` next to the vault, e.g. `pw.scrypt` -> `pw.scrypt.tmp`.
+fn temp_path(file: &Path) -> PathBuf {
+    let mut name = file.as_os_str().to_owned();
+    name.push(".tmp");
+    PathBuf::from(name)
 }
 
 /// `<file>.bak` next to the vault, e.g. `pw.scrypt` -> `pw.scrypt.bak`.
@@ -346,6 +375,21 @@ mod tests {
         assert!(!backup_path(&file).exists());
         // No stray temp files left in the directory.
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn store_uses_deterministic_temp_name_and_overwrites_stale_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = vault_file(&dir);
+        let tmp = temp_path(&file);
+        assert_eq!(tmp, dir.path().join("pw.scrypt.tmp"));
+        // A stale temp file from a crashed previous run must not block the
+        // write, and must be gone afterwards.
+        fs::write(&tmp, b"stale").unwrap();
+        let entries = vec![entry("a", "pw-a")];
+        store(&file, &passphrase(), &entries, &TEST_PARAMS).unwrap();
+        assert!(!tmp.exists());
+        assert_eq!(load(&file, &passphrase()).unwrap(), entries);
     }
 
     #[test]

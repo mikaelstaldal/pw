@@ -1,0 +1,18 @@
+#include <tunables/global>
+
+profile pw ${PATH_TO_EXECUTABLE}/pw {
+    #include <abstractions/base>
+
+    ${PATH_TO_EXECUTABLE}/pw rm,
+
+    /dev/tty rw, # read password
+
+    # X11 clipboard access
+    network unix,
+    owner /run/user/@{uid}/gdm/Xauthority r,
+
+    owner @{HOME}/ r,
+    owner @{HOME}/pw.scrypt rwk,
+    owner @{HOME}/pw.scrypt.bak rwk,
+    owner @{HOME}/pw.scrypt.tmp rwk,
+}
