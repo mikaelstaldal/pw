@@ -326,10 +326,18 @@ fn confirm(prompt: &str) -> anyhow::Result<bool> {
     Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
 }
 
-/// Replace control characters before echoing vault content to a terminal,
-/// in case an old vault contains names this version would not accept.
+/// Replace control, bidirectional and zero-width characters before echoing
+/// vault content to a terminal, in case a vault contains names this version
+/// would not accept (an old, imported or shared vault). This blocks
+/// Trojan-Source / homoglyph style display spoofing.
 fn sanitize(text: &str) -> String {
     text.chars()
-        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .map(|c| {
+            if c.is_control() || pw::is_display_spoofing_char(c) {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
         .collect()
 }

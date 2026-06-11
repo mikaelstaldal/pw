@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 (2026-06-11)
+
+Filter out strange Unicode characters which can be used for spoofing.
+
 ## 0.2.0 (2026-06-11)
 
 Complete rewrite. **The vault file format is unchanged** — existing vaults

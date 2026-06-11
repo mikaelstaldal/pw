@@ -213,8 +213,30 @@ fn vault_err(file: &Path, err: vault::Error) -> PwError {
     }
 }
 
+/// Returns true for Unicode bidirectional control and zero-width code points
+/// that can reorder or disguise how text renders without being "control"
+/// characters per [`char::is_control`] (a Trojan-Source / homoglyph style
+/// display spoof). Used both to reject such characters on input and to
+/// replace them on output.
+pub fn is_display_spoofing_char(c: char) -> bool {
+    matches!(c,
+        // Bidirectional embeddings, overrides and isolates
+        '\u{202A}'..='\u{202E}'   // LRE, RLE, PDF, LRO, RLO
+        | '\u{2066}'..='\u{2069}' // LRI, RLI, FSI, PDI
+        // Bidirectional marks
+        | '\u{200E}' | '\u{200F}' // LRM, RLM
+        | '\u{061C}'              // Arabic Letter Mark
+        // Zero-width characters
+        | '\u{200B}'              // Zero Width Space
+        | '\u{200C}' | '\u{200D}' // ZWNJ, ZWJ
+        | '\u{2060}'              // Word Joiner
+        | '\u{FEFF}'              // Zero Width No-Break Space / BOM
+    )
+}
+
 /// Entry names must be non-empty, at most [`MAX_NAME_LEN`] characters and
-/// free of control characters. Everything a hostname can contain is allowed.
+/// free of control, bidirectional and zero-width characters. Everything a
+/// hostname can contain is allowed.
 pub fn validate_name(name: &str) -> Result<(), PwError> {
     if name.is_empty() {
         return Err(PwError::InvalidInput {
@@ -242,6 +264,12 @@ fn validate_text(what: &'static str, value: &str) -> Result<(), PwError> {
         return Err(PwError::InvalidInput {
             what,
             reason: "contains control characters".to_string(),
+        });
+    }
+    if value.chars().any(is_display_spoofing_char) {
+        return Err(PwError::InvalidInput {
+            what,
+            reason: "contains bidirectional or zero-width characters".to_string(),
         });
     }
     Ok(())
@@ -432,6 +460,22 @@ mod tests {
         };
         let err = add(&file, &passphrase(), bad, &TEST_PARAMS).unwrap_err();
         assert!(matches!(err, PwError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn rejects_bidi_and_zero_width_chars() {
+        // Right-to-Left Override, Left-to-Right Isolate, Zero Width Space,
+        // Zero Width Joiner and BOM must all be rejected in names and usernames.
+        for spoof in ["a\u{202E}b", "a\u{2066}b", "a\u{200B}b", "a\u{200D}b", "a\u{FEFF}b"] {
+            assert!(
+                matches!(validate_name(spoof), Err(PwError::InvalidInput { .. })),
+                "name {spoof:?}"
+            );
+            assert!(
+                matches!(validate_username(spoof), Err(PwError::InvalidInput { .. })),
+                "username {spoof:?}"
+            );
+        }
     }
 
     #[test]
