@@ -25,6 +25,9 @@ clippers = "~0.1.2"
 dirs = "~6.0.0"
 rpassword = "7.5.4"
 
+[target.'cfg(unix)'.dependencies]
+libc = "~0.2.180"
+
 [dev-dependencies]
 assert_cmd = "~2.2.2"
 assert_fs = "~1.1.4"

@@ -2,6 +2,11 @@
 
 ## 0.2.2 (2026-06-12)
 
+- On startup `pw` now disables core dumps and, on Linux, marks itself
+  non-dumpable (which also blocks `ptrace` attaches from same-user processes),
+  so a crash can no longer persist the derived key or decrypted vault to disk.
+  Swap is still an OS concern — see the README security notes on encrypted
+  swap.
 - A password copied to the clipboard is now removed after a timeout (default
   20 seconds), instead of lingering indefinitely. `pw` waits in the
   foreground and then overwrites the clipboard if it still holds the password;

@@ -815,6 +815,7 @@ dependencies = [
  "ctr",
  "dirs",
  "hmac",
+ "libc",
  "predicates",
  "rand",
  "rand_chacha",

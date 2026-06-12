@@ -103,5 +103,12 @@ the vault, so a sandbox policy such as AppArmor only needs to allow
   the clipboard until something else overwrites it.
 - Secrets are zeroized in memory when no longer needed, and never appear in
   debug output.
+- On startup `pw` disables core dumps, and on Linux marks itself non-dumpable
+  (which also blocks `ptrace` attaches from other same-user processes), so a
+  crash cannot persist the derived key or decrypted vault to disk. This does
+  **not** protect against swap: while a secret is live, the kernel may page it
+  out to swap, where zeroize-on-drop cannot reach it. On a machine that may
+  swap, use **encrypted swap** (or disable swap with `swapoff`) to close this
+  gap — it is an OS-level setting `pw` cannot enforce itself.
 - You can use the `apparmor-profile` file as a template for an Apparmor profile, you need to substitute 
   `${PATH_TO_EXECUTABLE}` with absolute paths. This has only been tested on Ubuntu Linux.

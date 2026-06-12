@@ -136,6 +136,7 @@ enum Commands {
 }
 
 fn main() -> ExitCode {
+    harden_process();
     match run() {
         Ok(code) => code,
         Err(err) => {
@@ -144,6 +145,33 @@ fn main() -> ExitCode {
         }
     }
 }
+
+/// Best-effort process hardening, run once before any secret is read.
+///
+/// Disables core dumps so a crash cannot persist the derived key or the
+/// decrypted vault to disk, and on Linux marks the process non-dumpable,
+/// which additionally blocks `ptrace` attaches from same-user processes.
+/// This does not protect against swap; see the README on encrypted swap.
+/// Failures are ignored: this is defense in depth, not a correctness
+/// requirement, and the kernel may forbid these on some configurations.
+#[cfg(unix)]
+fn harden_process() {
+    // SAFETY: both calls take plain scalars/POD and have no memory effects;
+    // ignoring the return value is intentional (best-effort hardening).
+    unsafe {
+        let limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        libc::setrlimit(libc::RLIMIT_CORE, &limit);
+
+        #[cfg(target_os = "linux")]
+        libc::prctl(libc::PR_SET_DUMPABLE, 0);
+    }
+}
+
+#[cfg(not(unix))]
+fn harden_process() {}
 
 fn run() -> anyhow::Result<ExitCode> {
     let cli = Cli::parse();
