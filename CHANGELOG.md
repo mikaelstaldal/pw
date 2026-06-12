@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.2 (2026-06-12)
+
+- A password copied to the clipboard is now removed after a timeout (default
+  20 seconds), instead of lingering indefinitely. `pw` waits in the
+  foreground and then overwrites the clipboard if it still holds the password;
+  pressing ENTER removes it immediately (Ctrl-C exits without removing). To
+  evict the password from the desktop clipboard manager the slot is
+  overwritten with a single space rather than emptied. The new global
+  `--clear-timeout <secs>` flag tunes the
+  delay, and `--clear-timeout 0` restores the previous never-clear behaviour.
+  Note that a clipboard *history* manager may retain its own copy that `pw`
+  cannot clear — see the README security notes.
+
 ## 0.2.1 (2026-06-11)
 
 Filter out strange Unicode characters which can be used for spoofing.

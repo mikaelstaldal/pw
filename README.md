@@ -47,6 +47,11 @@ Global options:
 - `--file <path>` — use another vault file than `~/pw.scrypt`
 - `--passphrase-stdin` — read the passphrase as a single line from stdin
   instead of prompting; for scripts and other non-interactive use
+- `--clear-timeout <secs>` — how long a copied password stays on the
+  clipboard before `pw` clears it (default 20). `pw` waits this long, then
+  clears the clipboard unless you have copied something else in the meantime;
+  press ENTER to clear immediately, or Ctrl-C to exit without clearing. Use
+  `0` to leave the clipboard untouched (the old behaviour)
 
 The *username* is a free-form label stored alongside the password; it may be
 omitted. Generated passwords use a cryptographically secure random number
@@ -84,8 +89,18 @@ the vault, so a sandbox policy such as AppArmor only needs to allow
 - On Unix, the vault and its backup are created with mode `0600` from the
   start. **On Windows, file permissions are not restricted** — keep the vault
   in a directory only your user can read.
-- Passwords copied to the clipboard stay there until something else is
-  copied; `pw` tells you whenever it writes to the clipboard.
+- A copied password is removed from the clipboard after `--clear-timeout`
+  seconds (default 20; `pw` waits in the foreground, or removes it at once when
+  you press ENTER), and only if the clipboard still holds it, so anything you
+  copy in the meantime is preserved. To reliably evict the password from the
+  desktop clipboard manager the slot is overwritten with a single space rather
+  than emptied, so the clipboard ends up holding a space, not nothing. **A
+  clipboard history manager (GNOME extensions such
+  as GPaste or Clipboard Indicator, KDE Klipper, the Windows clipboard
+  history, third-party tools) may keep its own copy that `pw` cannot reach** —
+  disable history for sensitive copies, or use `--show` and pipe the password
+  to a consumer you control. With `--clear-timeout 0` the password stays on
+  the clipboard until something else overwrites it.
 - Secrets are zeroized in memory when no longer needed, and never appear in
   debug output.
 - You can use the `apparmor-profile` file as a template for an Apparmor profile, you need to substitute 

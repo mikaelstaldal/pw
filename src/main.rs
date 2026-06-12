@@ -3,9 +3,12 @@
 //! A command line password manager. All prompting, terminal and clipboard
 //! handling lives here; the library never assumes a terminal.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
 use clap::{Args, Parser, Subcommand};
@@ -28,6 +31,11 @@ struct Cli {
     /// Read the passphrase as a single line from stdin instead of prompting
     #[arg(long, global = true)]
     passphrase_stdin: bool,
+
+    /// Seconds to keep a copied password on the clipboard before clearing it
+    /// (cleared only if still unchanged); 0 leaves the clipboard untouched
+    #[arg(long, global = true, default_value_t = 20)]
+    clear_timeout: u64,
 
     /// Override the scrypt CPU/memory cost (log2 of N) when writing;
     /// intended for tests
@@ -149,6 +157,11 @@ fn run() -> anyhow::Result<ExitCode> {
         log_n: cli.scrypt_log_n.unwrap_or(Params::default().log_n),
         ..Params::default()
     };
+    let clear_timeout = cli.clear_timeout;
+
+    // Holds the value copied to the clipboard, if any, so it can be cleared
+    // after `clear_timeout` once the command has otherwise finished.
+    let mut pending_clear: Option<Zeroizing<String>> = None;
 
     match cli.command {
         Commands::Init {} => {
@@ -165,8 +178,8 @@ fn run() -> anyhow::Result<ExitCode> {
             if show {
                 println!("{}", entry.password.expose());
             } else {
-                copy_to_clipboard(entry.password.expose())?;
-                eprintln!("Password for '{}' copied to clipboard.", sanitize(&name));
+                pending_clear = Some(copy_to_clipboard(entry.password.expose())?);
+                announce_copied(&format!("Password for '{}'", sanitize(&name)), clear_timeout);
             }
         }
         Commands::List { pattern } => {
@@ -192,7 +205,7 @@ fn run() -> anyhow::Result<ExitCode> {
             if show {
                 println!("{}", password.expose());
             } else {
-                copy_to_clipboard(password.expose())?;
+                pending_clear = Some(copy_to_clipboard(password.expose())?);
             }
             let entry = PasswordEntry {
                 name: name.clone(),
@@ -201,7 +214,7 @@ fn run() -> anyhow::Result<ExitCode> {
             };
             pw::add(&file, &passphrase, entry, &params)?;
             if !show {
-                eprintln!("Password for '{}' copied to clipboard.", sanitize(&name));
+                announce_copied(&format!("Password for '{}'", sanitize(&name)), clear_timeout);
             }
         }
         Commands::Update {
@@ -215,7 +228,7 @@ fn run() -> anyhow::Result<ExitCode> {
             if show {
                 println!("{}", password.expose());
             } else {
-                copy_to_clipboard(password.expose())?;
+                pending_clear = Some(copy_to_clipboard(password.expose())?);
             }
             let entry = PasswordEntry {
                 name: name.clone(),
@@ -224,7 +237,7 @@ fn run() -> anyhow::Result<ExitCode> {
             };
             pw::update(&file, &passphrase, entry, &params)?;
             if !show {
-                eprintln!("Password for '{}' copied to clipboard.", sanitize(&name));
+                announce_copied(&format!("Password for '{}'", sanitize(&name)), clear_timeout);
             }
         }
         Commands::Remove { name, yes } => {
@@ -245,8 +258,8 @@ fn run() -> anyhow::Result<ExitCode> {
             if show {
                 println!("{}", password.expose());
             } else {
-                copy_to_clipboard(password.expose())?;
-                eprintln!("Generated password copied to clipboard.");
+                pending_clear = Some(copy_to_clipboard(password.expose())?);
+                announce_copied("Generated password", clear_timeout);
             }
         }
         Commands::Export {} => {
@@ -255,6 +268,10 @@ fn run() -> anyhow::Result<ExitCode> {
             eprintln!("Warning: the decrypted vault follows on stdout.");
             println!("{}", json.as_str());
         }
+    }
+
+    if let Some(secret) = pending_clear {
+        wait_and_clear(&secret, clear_timeout);
     }
 
     Ok(ExitCode::SUCCESS)
@@ -311,11 +328,81 @@ fn generate(length: u32, charset: &str) -> anyhow::Result<Secret> {
     Ok(pw::generate_password(length, charset)?)
 }
 
-fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
+/// Write `text` to the system clipboard, returning a zeroizing copy of it so
+/// the caller can later clear the clipboard only if it is still unchanged.
+fn copy_to_clipboard(text: &str) -> anyhow::Result<Zeroizing<String>> {
     let mut clipboard = Clipboard::get();
     clipboard
         .write_text(text)
-        .map_err(|e| anyhow::anyhow!("cannot write to clipboard: {e}"))
+        .map_err(|e| anyhow::anyhow!("cannot write to clipboard: {e}"))?;
+    Ok(Zeroizing::new(text.to_string()))
+}
+
+/// Tell the user a password was copied, mentioning the auto-clear when enabled.
+fn announce_copied(what: &str, timeout: u64) {
+    if timeout == 0 {
+        eprintln!("{what} copied to clipboard.");
+    } else if io::stdin().is_terminal() {
+        eprintln!("{what} copied to clipboard; clearing in {timeout}s (press ENTER to clear now).");
+    } else {
+        eprintln!("{what} copied to clipboard; clearing in {timeout}s.");
+    }
+}
+
+/// Hold the copied password on the clipboard for `timeout` seconds, then clear
+/// it. Pressing ENTER during the wait clears immediately; Ctrl-C exits without
+/// clearing. The clipboard is only cleared when it still holds our value, so a
+/// password the user copied in the meantime is preserved. With `timeout` 0 the
+/// clipboard is left untouched.
+fn wait_and_clear(secret: &str, timeout: u64) {
+    if timeout == 0 {
+        return;
+    }
+
+    // Pressing ENTER clears immediately. Only watch stdin when it is a
+    // terminal, so piped input (e.g. --passphrase-stdin) is left untouched.
+    // The reader thread is abandoned when the process exits after the wait.
+    let entered = Arc::new(AtomicBool::new(false));
+    if io::stdin().is_terminal() {
+        let flag = Arc::clone(&entered);
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            if io::stdin().lock().read_line(&mut line).is_ok() {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(timeout);
+    while Instant::now() < deadline && !entered.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    if clear_if_unchanged(secret) {
+        eprintln!("Clipboard cleared.");
+    } else {
+        eprintln!("Clipboard changed since copy; left as-is.");
+    }
+}
+
+/// Wipe our password from the clipboard, but only while it still holds that
+/// value, so anything the user copied during the wait is left untouched.
+/// Returns whether we wiped it.
+///
+/// We overwrite with a single space rather than emptying the clipboard. The
+/// `clip` library behind `clippers` keeps a process-global owner and only
+/// hands the clipboard contents to the desktop clipboard manager (e.g.
+/// GNOME/mutter) at exit, and *only when its buffer is non-empty*. An empty
+/// clear is therefore never propagated: the manager keeps serving the cached
+/// password even though this process owned an empty selection. A one-character
+/// value makes the hand-off fire and evicts the password.
+fn clear_if_unchanged(secret: &str) -> bool {
+    let mut clipboard = Clipboard::get();
+    let still_ours = clipboard
+        .read()
+        .and_then(|data| data.into_text())
+        .is_some_and(|text| text == secret);
+    still_ours && clipboard.write_text(" ").is_ok()
 }
 
 fn confirm(prompt: &str) -> anyhow::Result<bool> {
