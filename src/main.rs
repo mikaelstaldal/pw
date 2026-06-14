@@ -3,8 +3,9 @@
 //! A command line password manager. All prompting, terminal and clipboard
 //! handling lives here; the library never assumes a terminal.
 
+use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,8 +19,7 @@ use zeroize::Zeroizing;
 
 use pw::{Params, Passphrase, PasswordEntry, Secret};
 
-const DEFAULT_CHARSET: &str =
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
+const DEFAULT_CHARSET: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
 
 #[derive(Parser)]
 #[command(version, about = "A command line password manager")]
@@ -87,6 +87,10 @@ enum Commands {
         name: String,
         /// Username (free-form label, may be omitted)
         username: Option<String>,
+        /// Site this entry is for (e.g. github.com). Required for the entry to
+        /// be used by the browser integration, which matches on url only
+        #[arg(long)]
+        url: Option<String>,
         #[command(flatten)]
         password: PasswordOptions,
         /// Print the new password to stdout instead of copying it
@@ -100,6 +104,12 @@ enum Commands {
         name: String,
         /// Username (free-form label, may be omitted)
         username: Option<String>,
+        /// Site this entry is for; omit to clear it (like the username)
+        #[arg(long)]
+        url: Option<String>,
+        /// Keep the existing password, only changing the username and url
+        #[arg(long, conflicts_with = "input_password")]
+        keep_password: bool,
         #[command(flatten)]
         password: PasswordOptions,
         /// Print the new password to stdout instead of copying it
@@ -133,6 +143,21 @@ enum Commands {
 
     /// Print the decrypted vault as JSON, for backup or migration
     Export {},
+
+    /// Install the Firefox native-messaging manifest for the browser host
+    InstallBrowser {
+        /// Remove the manifest(s) instead of writing them
+        #[arg(long)]
+        uninstall: bool,
+
+        /// Deprecated: snap Firefox now uses the same standard path (no-op)
+        #[arg(long, conflicts_with = "no_snap")]
+        snap: bool,
+
+        /// Deprecated: all Firefox variants use the same standard path (no-op)
+        #[arg(long)]
+        no_snap: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -144,6 +169,143 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Reverse-DNS name of the native-messaging host, used as the manifest
+/// filename and its `name` field; must match the `connectNative` call in the
+/// extension's background script.
+const HOST_MANIFEST_NAME: &str = "nu.staldal.pw";
+/// The pinned extension ID (`browser_specific_settings.gecko.id`) allowed to
+/// talk to the host.
+const EXTENSION_ID: &str = "pw@staldal.nu";
+
+/// Install (or remove) the Firefox native-messaging manifest(s) so Firefox can
+/// find `pw-browser-host`, and create a default `~/.config/pw/browser.json`.
+fn install_browser(uninstall: bool, snap: bool, no_snap: bool) -> anyhow::Result<()> {
+    let home = home_dir().context("cannot determine the home directory")?;
+
+    if uninstall {
+        for dir in uninstall_dirs(&home, snap, no_snap) {
+            let path = dir.join(format!("{HOST_MANIFEST_NAME}.json"));
+            match fs::remove_file(&path) {
+                Ok(()) => println!("Removed {}", path.display()),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).context(format!("cannot remove {}", path.display())),
+            }
+        }
+        println!("The Firefox extension itself must be removed from about:addons.");
+        return Ok(());
+    }
+
+    let host_path = host_binary_path()?;
+    let manifest = native_messaging_manifest(&host_path)?;
+    for dir in install_dirs(&home, snap, no_snap) {
+        fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+        let path = dir.join(format!("{HOST_MANIFEST_NAME}.json"));
+        fs::write(&path, &manifest).with_context(|| format!("cannot write {}", path.display()))?;
+        println!("Wrote {}", path.display());
+    }
+    write_default_config(&home)?;
+
+    if !host_path.exists() {
+        eprintln!(
+            "Note: host binary {} does not exist yet; install it alongside pw \
+             before using the extension.",
+            host_path.display()
+        );
+    }
+    Ok(())
+}
+
+/// The absolute path to `pw-browser-host`, expected next to the running `pw`.
+fn host_binary_path() -> anyhow::Result<PathBuf> {
+    let exe = std::env::current_exe().context("cannot determine the pw executable path")?;
+    // Resolve symlinks so the manifest points at the real binary; fall back to
+    // the raw path if canonicalization fails (e.g. the file was moved).
+    let exe = exe.canonicalize().unwrap_or(exe);
+    let dir = exe
+        .parent()
+        .context("the pw executable has no parent directory")?;
+    Ok(dir.join("pw-browser-host"))
+}
+
+/// The manifest JSON. `path` must be absolute.
+fn native_messaging_manifest(host_path: &Path) -> anyhow::Result<String> {
+    let path = host_path
+        .to_str()
+        .context("the host binary path is not valid UTF-8")?;
+    if !host_path.is_absolute() {
+        anyhow::bail!("the host binary path {path} is not absolute");
+    }
+    let manifest = serde_json::json!({
+        "name": HOST_MANIFEST_NAME,
+        "description": "pw password manager",
+        "path": path,
+        "type": "stdio",
+        "allowed_extensions": [EXTENSION_ID],
+    });
+    Ok(serde_json::to_string_pretty(&manifest)?)
+}
+
+/// The Firefox native-messaging directory.  Both snap and non-snap Firefox
+/// read manifests from this standard location: the snap variant does so via
+/// the XDG desktop portal, which checks the same path.
+fn manifest_dir(home: &Path) -> PathBuf {
+    home.join(".mozilla/native-messaging-hosts")
+}
+
+/// Where to write manifests.  All Firefox variants use the same standard
+/// path; `--snap`/`--no-snap` are accepted for backwards compatibility but
+/// have no effect on the destination.
+fn install_dirs(home: &Path, _snap: bool, _no_snap: bool) -> Vec<PathBuf> {
+    vec![manifest_dir(home)]
+}
+
+/// Where to look when removing manifests.
+fn uninstall_dirs(home: &Path, _snap: bool, _no_snap: bool) -> Vec<PathBuf> {
+    vec![manifest_dir(home)]
+}
+
+/// Create `~/.config/pw/browser.json` with defaults, unless it already exists.
+fn write_default_config(home: &Path) -> anyhow::Result<()> {
+    let dir = dirs::config_dir()
+        .unwrap_or_else(|| home.join(".config"))
+        .join("pw");
+    let path = dir.join("browser.json");
+    if path.exists() {
+        println!(
+            "Config {} already exists; leaving it unchanged.",
+            path.display()
+        );
+        return Ok(());
+    }
+    fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let config = serde_json::to_string_pretty(&serde_json::json!({
+        "file": "~/pw.scrypt",
+        "cache_minutes": 10,
+    }))?;
+    write_private(&path, config.as_bytes())
+        .with_context(|| format!("cannot write {}", path.display()))?;
+    println!("Wrote default config {}", path.display());
+    Ok(())
+}
+
+/// Write a file `0600` on Unix.
+#[cfg(unix)]
+fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    fs::write(path, bytes)
 }
 
 /// Best-effort process hardening, run once before any secret is read.
@@ -203,11 +365,19 @@ fn run() -> anyhow::Result<ExitCode> {
             if !entry.username.is_empty() {
                 println!("{}", sanitize(&entry.username));
             }
+            // The url is informational; print it to stderr so the stdout
+            // contract (username, then password under --show) is unchanged.
+            if let Some(url) = &entry.url {
+                eprintln!("url: {}", sanitize(url));
+            }
             if show {
                 println!("{}", entry.password.expose());
             } else {
                 pending_clear = Some(copy_to_clipboard(entry.password.expose())?);
-                announce_copied(&format!("Password for '{}'", sanitize(&name)), clear_timeout);
+                announce_copied(
+                    &format!("Password for '{}'", sanitize(&name)),
+                    clear_timeout,
+                );
             }
         }
         Commands::List { pattern } => {
@@ -225,6 +395,7 @@ fn run() -> anyhow::Result<ExitCode> {
         Commands::Add {
             name,
             username,
+            url,
             password,
             show,
         } => {
@@ -239,33 +410,56 @@ fn run() -> anyhow::Result<ExitCode> {
                 name: name.clone(),
                 username: username.unwrap_or_default(),
                 password,
+                url: normalize_url(url),
             };
             pw::add(&file, &passphrase, entry, &params)?;
             if !show {
-                announce_copied(&format!("Password for '{}'", sanitize(&name)), clear_timeout);
+                announce_copied(
+                    &format!("Password for '{}'", sanitize(&name)),
+                    clear_timeout,
+                );
             }
         }
         Commands::Update {
             name,
             username,
+            url,
+            keep_password,
             password,
             show,
         } => {
-            let password = obtain_password(&password)?;
-            let passphrase = obtain_passphrase(cli.passphrase_stdin, false)?;
-            if show {
-                println!("{}", password.expose());
+            if keep_password {
+                let passphrase = obtain_passphrase(cli.passphrase_stdin, false)?;
+                pw::update_keep_password(
+                    &file,
+                    &passphrase,
+                    &name,
+                    username.unwrap_or_default(),
+                    normalize_url(url),
+                    &params,
+                )?;
+                println!("Updated entry '{}' (password unchanged).", sanitize(&name));
             } else {
-                pending_clear = Some(copy_to_clipboard(password.expose())?);
-            }
-            let entry = PasswordEntry {
-                name: name.clone(),
-                username: username.unwrap_or_default(),
-                password,
-            };
-            pw::update(&file, &passphrase, entry, &params)?;
-            if !show {
-                announce_copied(&format!("Password for '{}'", sanitize(&name)), clear_timeout);
+                let password = obtain_password(&password)?;
+                let passphrase = obtain_passphrase(cli.passphrase_stdin, false)?;
+                if show {
+                    println!("{}", password.expose());
+                } else {
+                    pending_clear = Some(copy_to_clipboard(password.expose())?);
+                }
+                let entry = PasswordEntry {
+                    name: name.clone(),
+                    username: username.unwrap_or_default(),
+                    password,
+                    url: normalize_url(url),
+                };
+                pw::update(&file, &passphrase, entry, &params)?;
+                if !show {
+                    announce_copied(
+                        &format!("Password for '{}'", sanitize(&name)),
+                        clear_timeout,
+                    );
+                }
             }
         }
         Commands::Remove { name, yes } => {
@@ -295,6 +489,13 @@ fn run() -> anyhow::Result<ExitCode> {
             let json = pw::export(&file, &passphrase)?;
             eprintln!("Warning: the decrypted vault follows on stdout.");
             println!("{}", json.as_str());
+        }
+        Commands::InstallBrowser {
+            uninstall,
+            snap,
+            no_snap,
+        } => {
+            install_browser(uninstall, snap, no_snap)?;
         }
     }
 
@@ -439,6 +640,12 @@ fn confirm(prompt: &str) -> anyhow::Result<bool> {
     let mut line = String::new();
     io::stdin().lock().read_line(&mut line)?;
     Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
+}
+
+/// Treat an absent or empty `--url` as "no url", so an entry without one stays
+/// byte-identical to the pre-`url` format rather than carrying an empty string.
+fn normalize_url(url: Option<String>) -> Option<String> {
+    url.filter(|u| !u.is_empty())
 }
 
 /// Replace control, bidirectional and zero-width characters before echoing

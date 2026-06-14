@@ -220,6 +220,7 @@ mod tests {
             name: name.to_string(),
             username: format!("{name}-user"),
             password: password.into(),
+            url: None,
         }
     }
 
@@ -274,8 +275,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = vault_file(&dir);
         let legacy = br#"[{"name":"a","username":"a-user","password":"pw-a"}]"#;
-        let data =
-            scrypt_format::encrypt(legacy, PASSPHRASE.as_bytes(), &TEST_PARAMS).unwrap();
+        let data = scrypt_format::encrypt(legacy, PASSPHRASE.as_bytes(), &TEST_PARAMS).unwrap();
         fs::write(&file, data).unwrap();
         assert_eq!(
             load(&file, &passphrase()).unwrap(),
@@ -288,8 +288,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = vault_file(&dir);
         let future = br#"{"version":2,"entries":[],"url_field_or_whatever":true}"#;
-        let data =
-            scrypt_format::encrypt(future, PASSPHRASE.as_bytes(), &TEST_PARAMS).unwrap();
+        let data = scrypt_format::encrypt(future, PASSPHRASE.as_bytes(), &TEST_PARAMS).unwrap();
         fs::write(&file, data).unwrap();
         let err = load(&file, &passphrase()).unwrap_err();
         assert!(matches!(err, Error::UnsupportedVersion(2)));
@@ -394,9 +393,6 @@ mod tests {
 
     #[test]
     fn debug_redacts_passphrase() {
-        assert_eq!(
-            format!("{:?}", passphrase()),
-            "Passphrase([redacted])"
-        );
+        assert_eq!(format!("{:?}", passphrase()), "Passphrase([redacted])");
     }
 }

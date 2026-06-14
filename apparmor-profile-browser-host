@@ -1,0 +1,24 @@
+#include <tunables/global>
+
+profile pw-browser-host ${PATH_TO_EXECUTABLE}/pw-browser-host {
+    #include <abstractions/base>
+
+    ${PATH_TO_EXECUTABLE}/pw-browser-host rm,
+
+    # Prompt for the master passphrase outside the browser. pinentry runs
+    # unconfined: Ux scrubs only the loader-sensitive environment variables, so
+    # DISPLAY/WAYLAND_DISPLAY survive and the GUI prompt still appears.
+    /usr/bin/pinentry Ux,
+    /usr/bin/pinentry-* Ux,
+
+    owner @{HOME}/ r,
+
+    # The vault is opened read-only; this host never writes anything. Adjust
+    # the path if `file` in browser.json points elsewhere.
+    owner @{HOME}/pw.scrypt r,
+
+    # Config is read-only. The vault (including each entry's site `url`) is
+    # written only by the `pw` CLI, so the host needs no write access at all.
+    owner @{HOME}/.config/pw/ r,
+    owner @{HOME}/.config/pw/browser.json r,
+}

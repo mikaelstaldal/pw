@@ -29,6 +29,7 @@ Strict three-layer library (`src/lib.rs` is the crate root) plus a thin binary:
 2. **`src/vault.rs`** — encrypted file storage: the JSON envelope (`{"version":1,"entries":[...]}`) inside the scrypt format, atomic writes (write-to-temp, fsync, rename, keep previous as `.bak`), mode `0600` on Unix. Bare JSON arrays written by pw ≤ 0.1.x are still accepted on read.
 3. **`src/lib.rs`** — domain operations (init/get/list/add/update/remove/export) and input validation. Each operation takes the vault path and a `Passphrase` parameter.
 4. **`src/main.rs`** — the CLI binary (clap). ALL prompting, terminal and clipboard handling lives here; the library never prompts and never assumes a terminal, so it can serve non-interactive hosts.
+5. **`src/bin/pw-browser-host/`** — the Firefox native-messaging host (a second binary). Speaks the length-prefixed JSON protocol on stdio, obtains the passphrase via `pinentry` (never a terminal), and reuses the same library `Passphrase`-parameter API. See `README.md` (Firefox integration section) and `webextension/README.md`. The matching rules it relies on (`pw::matching_entries`, `pw::origin_hostname`) live in `lib.rs` so they are unit-tested. The Firefox add-on lives in `webextension/` and holds no secrets.
 
 Error types are layered the same way: `scrypt_format::Error` → `vault::Error` → `PwError`, with `lib.rs` mapping low-level errors to user-meaningful ones (e.g. wrong-passphrase vs corrupt-vault vs I/O are distinct).
 
@@ -42,6 +43,7 @@ Error types are layered the same way: `scrypt_format::Error` → `vault::Error` 
 
 - Default scrypt KDF parameters (`N=2^17`) are deliberately slow; tests always use `log_n = 12`. Unit tests pass small `Params` directly; CLI tests use the hidden global flag `--scrypt-log-n 12` together with `--passphrase-stdin`.
 - CLI tests (`tests/cli.rs`) use `assert_cmd`/`assert_fs`/`predicates` against the real binary in a temp dir.
+- Browser-host protocol tests (`tests/host.rs`) frame JSON to `pw-browser-host`'s stdin and assert the responses; they cover only paths that need neither `pinentry` nor a real vault (`status`, `lock`, ineligible/missing origin, unknown type).
 
 ## Other notes
 

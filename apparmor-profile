@@ -15,4 +15,7 @@ profile pw ${PATH_TO_EXECUTABLE}/pw {
     owner @{HOME}/pw.scrypt rwk,
     owner @{HOME}/pw.scrypt.bak rwk,
     owner @{HOME}/pw.scrypt.tmp rwk,
+
+    owner @{HOME}/.config/pw/ r,
+    owner @{HOME}/.config/pw/* rw,
 }

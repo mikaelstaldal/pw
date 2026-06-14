@@ -275,6 +275,106 @@ fn export_prints_the_vault_as_json() {
 }
 
 #[test]
+fn url_is_stored_and_shown() {
+    let dir = TempDir::new().unwrap();
+    let vault = init_vault(&dir);
+    pw(&vault)
+        .args([
+            "add",
+            "work-github",
+            "alice",
+            "--url",
+            "github.com",
+            "--show",
+        ])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success();
+    // The url is persisted in the vault...
+    pw(&vault)
+        .arg("export")
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success()
+        .stdout(contains(r#""url":"github.com""#));
+    // ...and surfaced (on stderr) by `get`.
+    pw(&vault)
+        .args(["get", "work-github", "--show"])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success()
+        .stderr(contains("url: github.com"));
+}
+
+#[test]
+fn update_without_url_clears_it() {
+    let dir = TempDir::new().unwrap();
+    let vault = init_vault(&dir);
+    pw(&vault)
+        .args(["add", "site", "u", "--url", "example.com", "--show"])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success();
+    // Omitting --url on update clears it, the same way omitting the username
+    // clears the username.
+    pw(&vault)
+        .args(["update", "site", "u", "--show"])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success();
+    pw(&vault)
+        .arg("export")
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success()
+        .stdout(contains(r#""url":"#).not());
+}
+
+#[test]
+fn update_keep_password_changes_metadata_only() {
+    let dir = TempDir::new().unwrap();
+    let vault = init_vault(&dir);
+    let password = add_entry(&vault, "foo", "user1");
+
+    // Re-point the entry at a site and relabel it, keeping the password.
+    pw(&vault)
+        .args([
+            "update",
+            "foo",
+            "user2",
+            "--url",
+            "github.com",
+            "--keep-password",
+        ])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success()
+        .stdout(contains("password unchanged"));
+
+    // The username and url changed; the original password is intact.
+    pw(&vault)
+        .args(["get", "foo", "--show"])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success()
+        .stdout(format!("user2\n{password}\n"))
+        .stderr(contains("url: github.com"));
+}
+
+#[test]
+fn update_keep_password_rejects_input_password() {
+    let dir = TempDir::new().unwrap();
+    let vault = init_vault(&dir);
+    add_entry(&vault, "foo", "user1");
+    // --keep-password and --input-password contradict each other.
+    pw(&vault)
+        .args(["update", "foo", "--keep-password", "--input-password"])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .failure();
+}
+
+#[test]
 fn backup_is_kept_after_rewrite() {
     let dir = TempDir::new().unwrap();
     let vault = init_vault(&dir);

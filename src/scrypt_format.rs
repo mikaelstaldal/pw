@@ -286,7 +286,10 @@ mod tests {
     fn bad_magic() {
         let mut data = encrypted();
         data[0] ^= 0x01;
-        assert_eq!(decrypt(&data, PASSPHRASE).unwrap_err(), Error::NotScryptFormat);
+        assert_eq!(
+            decrypt(&data, PASSPHRASE).unwrap_err(),
+            Error::NotScryptFormat
+        );
     }
 
     #[test]
@@ -303,7 +306,10 @@ mod tests {
     fn salt_bit_flip_fails_checksum() {
         let mut data = encrypted();
         data[20] ^= 0x01;
-        assert_eq!(decrypt(&data, PASSPHRASE).unwrap_err(), Error::NotScryptFormat);
+        assert_eq!(
+            decrypt(&data, PASSPHRASE).unwrap_err(),
+            Error::NotScryptFormat
+        );
     }
 
     #[test]
@@ -358,9 +364,21 @@ mod tests {
     #[test]
     fn zero_params_rejected() {
         for params in [
-            Params { log_n: 0, r: 8, p: 1 },
-            Params { log_n: 12, r: 0, p: 1 },
-            Params { log_n: 12, r: 8, p: 0 },
+            Params {
+                log_n: 0,
+                r: 8,
+                p: 1,
+            },
+            Params {
+                log_n: 12,
+                r: 0,
+                p: 1,
+            },
+            Params {
+                log_n: 12,
+                r: 8,
+                p: 0,
+            },
         ] {
             assert!(matches!(
                 encrypt(PLAINTEXT, PASSPHRASE, &params).unwrap_err(),

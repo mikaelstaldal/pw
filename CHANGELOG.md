@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.3.0 (2026-06-14)
+
+### Firefox web integration
+
+- New `pw-browser-host` binary: a Firefox native-messaging host that fills
+  usernames and passwords into login forms **without the clipboard** and
+  **without giving the browser the whole vault**. It prompts for the master
+  passphrase via `pinentry` (outside the browser), decrypts in-process, and
+  releases only an entry matching the visited site. It is **strictly
+  read-only** — it never writes the vault.
+- Which sites may receive an entry is set entirely from the CLI: the host
+  releases an entry only to a site matching the entry's `url`, which requires
+  the master passphrase to set. Only entries with a `url` are usable in the
+  browser. A compromised browser cannot associate new sites, which is what
+  keeps the host read-only.
+- New `pw install-browser` subcommand writes the native-messaging manifest(s),
+  detecting the snap and non-snap Firefox layouts (overridable with
+  `--snap`/`--no-snap`), and creates a default `~/.config/pw/browser.json`.
+  `--uninstall` removes the manifest(s).
+- New `webextension/` Firefox add-on (MV2): a background script holding the
+  native-messaging port, a toolbar popup that picks among multiple matches,
+  and an on-demand fill script. It contains no crypto and stores no secrets.
+- Library: `pw::matching_entries` and `pw::origin_hostname` match a site's
+  origin to entry urls by the eTLD+1 rule (Public Suffix List), with
+  IDNA normalization and https-only eligibility.
+- New optional `url` field on entries (`pw add --url` / `pw update --url`),
+  which the browser integration matches against the visited site; the entry
+  `name` is never matched. It is omitted from the stored JSON when empty, so
+  existing vaults stay byte-identical to the previous format.
+- New `apparmor-profile-browser-host` template confining `pw-browser-host` to
+  read-only access (the vault and its config) plus launching `pinentry`.
+
+### Other
+
+- `pw update <name> --keep-password` changes an entry's username and url while
+  keeping its current password, for re-pointing or relabelling an entry without
+  rotating the secret.
+
 ## 0.2.2 (2026-06-12)
 
 - On startup `pw` now disables core dumps and, on Linux, marks itself

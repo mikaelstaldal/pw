@@ -27,10 +27,11 @@ pw list                      # show all entries
 | `pw get <name> [--show]`                | Copy the password to the clipboard, or print it with `--show`. Prints the username first, if there is one. |
 | `pw list [PATTERN]`                     | List entries, optionally filtered by a case-insensitive substring of the name.                             |
 | `pw add <name> [username] [options]`    | Add an entry. The password is generated (and copied to the clipboard) unless `--input-password` is given.  |
-| `pw update <name> [username] [options]` | Replace the username and password of an existing entry.                                                    |
+| `pw update <name> [username] [options]` | Replace the username and password of an existing entry, or just the username/url with `--keep-password`.   |
 | `pw remove <name> [--yes]`              | Remove an entry, after confirmation (`--yes` skips it).                                                    |
 | `pw generate [options]`                 | Generate a password without storing it.                                                                    |
 | `pw export`                             | Print the decrypted vault as JSON on stdout, for backup or migration.                                      |
+| `pw install-browser [--uninstall]`      | Install (or remove) the Firefox native-messaging manifest for the browser integration. See below.          |
 
 Options for `add`, `update` and `generate`:
 
@@ -39,6 +40,11 @@ Options for `add`, `update` and `generate`:
   (default: letters, digits and `-`)
 - `--input-password` — type the password instead of generating one
   (`add`/`update` only)
+- `--url <url>` — the site this entry is for, used by the Firefox integration
+  when the entry name is not the hostname (`add`/`update` only); omitting it on
+  `update` clears it, like the username
+- `--keep-password` — on `update`, keep the existing password and change only
+  the username and url (`update` only)
 - `--show` — print the password to stdout instead of copying it to the
   clipboard
 
@@ -56,6 +62,74 @@ Global options:
 The *username* is a free-form label stored alongside the password; it may be
 omitted. Generated passwords use a cryptographically secure random number
 generator (ChaCha20, OS-seeded) without modulo bias.
+
+## Firefox integration
+
+`pw` can fill usernames and passwords into login forms in Firefox **without
+using the clipboard** and **without handing Firefox the whole vault**. A
+companion binary, `pw-browser-host`, decrypts the vault in-process, releases
+only the single entry matching the site you are on, and prompts for the master
+passphrase in a `pinentry` dialog *outside* the browser. Only entries with a
+`url` set are used in the browser: set the site explicitly with
+`pw add <name> --url github.com` (or `pw update <name> --url …`). An entry's
+`name` is never matched against the visited site, so it can be anything you
+like — useful when you keep two accounts on one site.
+
+**Origin matching** uses a layered rule: an entry matches a request for
+`https://login.example.co.uk` when the host part of its `url`
+equals the request hostname exactly (`login.example.co.uk`) or is a parent
+domain at a label boundary (`example.co.uk`), up to but not including the
+registrable domain determined by the Public Suffix List — so a `url` of
+`co.uk` or `com` never matches. Matching is case-insensitive and
+IDNA/punycode-normalized. Only `https:` origins are eligible (plus
+`http://localhost` and `http://127.0.0.1` for local development).
+
+The browser host is **strictly read-only**: it never writes the vault. Which
+sites may receive an entry is decided by you, from the CLI: the host releases
+an entry only to a site that matches the entry's `url`, which is
+set only with the master passphrase in a terminal:
+
+```sh
+pw add github.com alice --url github.com      # declare the site with --url
+pw add work-github alice --url github.com     # name can be anything; the url decides the match
+pw update work-github --url gitlab.com --keep-password   # re-point it, password unchanged
+```
+
+A compromised browser therefore cannot make the host release an entry for a
+site you never associated with it — only you can, with the master passphrase.
+
+Setup:
+
+```sh
+pw install-browser          # writes the native-messaging manifest + default config
+```
+
+Then load the add-on in `webextension/` (see `webextension/README.md` for
+temporary loading during development and signing for permanent installation).
+On a login page, click the toolbar button or press `Ctrl+Alt+L`.
+
+Behaviour is configured in `~/.config/pw/browser.json`:
+
+```json
+{"file": "~/pw.scrypt", "cache_minutes": 10}
+```
+
+- `cache_minutes` — how long a decrypted vault stays in the host's memory
+  before it re-prompts (`0` re-prompts every time).
+
+### Security model
+
+| Threat | Mitigation |
+|---|---|
+| Malicious/XSS'd page harvesting autofill | No fill without a user gesture; no always-on content script; the page cannot trigger the extension. |
+| Page spoofing its origin | The origin is taken from the tab URL in the background script, never from page or content-script input. |
+| Phishing domain (`github.com.evil.example`) | Suffix matching at label boundaries bounded by the Public Suffix List — only `evil.example`'s own entries can match. |
+| Rogue extension talking to the host | `allowed_extensions` in the manifest pins `pw@staldal.nu`; Firefox (and the snap portal) enforces it. |
+| Confined snap browser escaping to read the vault | The snap never gains direct access to `~/pw.scrypt`; it can only ask the portal to launch the named host, gated by `allowed_extensions` and a one-time portal prompt. |
+| Compromised pw extension / browser process | Cannot read the vault file or passphrase; can only issue `get-logins` per origin, and only entries you associated with that site (by `name` or `url`, set from the CLI) are released. It cannot associate new sites (the host is read-only). |
+| Passphrase leakage via process metadata | The passphrase goes from pinentry into a zeroizing buffer and is consumed in-process — never in argv, the environment, or any subprocess. Zeroized after use. |
+| Credentials at rest in the host | Never written to disk; held in host memory only, bounded by `cache_minutes`, zeroized on lock or exit. |
+| Clipboard sniffers | The clipboard is not used anywhere in this flow. |
 
 ## File format and recovery
 
@@ -112,6 +186,9 @@ the vault, so a sandbox policy such as AppArmor only needs to allow
   gap — it is an OS-level setting `pw` cannot enforce itself.
 - You can use the `apparmor-profile` file as a template for an Apparmor profile, you need to substitute 
   `${PATH_TO_EXECUTABLE}` with absolute paths. This has only been tested on Ubuntu Linux.
+  `apparmor-profile-browser-host` is the matching template for the `pw-browser-host`
+  binary (see [Firefox integration](#firefox-integration)); it confines the host
+  to reading the vault, reading its config, and launching `pinentry`.
 
 ## License
 
