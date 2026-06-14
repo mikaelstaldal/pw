@@ -141,6 +141,12 @@ enum Commands {
         show: bool,
     },
 
+    /// Show all attributes of an entry except the password
+    Show {
+        /// The password entry
+        name: String,
+    },
+
     /// Print the decrypted vault as JSON, for backup or migration
     Export {},
 
@@ -482,6 +488,17 @@ fn run() -> anyhow::Result<ExitCode> {
             } else {
                 pending_clear = Some(copy_to_clipboard(password.expose())?);
                 announce_copied("Generated password", clear_timeout);
+            }
+        }
+        Commands::Show { name } => {
+            let passphrase = obtain_passphrase(cli.passphrase_stdin, false)?;
+            let entry = pw::get(&file, &passphrase, &name)?;
+            println!("name: {}", sanitize(&entry.name));
+            if !entry.username.is_empty() {
+                println!("username: {}", sanitize(&entry.username));
+            }
+            if let Some(url) = &entry.url {
+                println!("url: {}", sanitize(url));
             }
         }
         Commands::Export {} => {

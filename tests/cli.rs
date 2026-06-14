@@ -427,6 +427,54 @@ fn generate_rejects_bad_charset() {
         .stderr(contains("invalid password charset"));
 }
 
+#[test]
+fn show_prints_attributes_without_password() {
+    let dir = TempDir::new().unwrap();
+    let vault = init_vault(&dir);
+    pw(&vault)
+        .args(["add", "work-github", "alice", "--url", "github.com", "--show"])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success();
+
+    pw(&vault)
+        .args(["show", "work-github"])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success()
+        .stdout(
+            contains("name: work-github")
+                .and(contains("username: alice"))
+                .and(contains("url: github.com")),
+        );
+}
+
+#[test]
+fn show_omits_absent_username_and_url() {
+    let dir = TempDir::new().unwrap();
+    let vault = init_vault(&dir);
+    add_entry(&vault, "bare", "");
+
+    pw(&vault)
+        .args(["show", "bare"])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success()
+        .stdout(contains("name: bare").and(contains("username").not()).and(contains("url").not()));
+}
+
+#[test]
+fn show_fails_for_unknown_entry() {
+    let dir = TempDir::new().unwrap();
+    let vault = init_vault(&dir);
+    pw(&vault)
+        .args(["show", "bogus"])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .failure()
+        .stderr(contains("no entry 'bogus'"));
+}
+
 #[cfg(unix)]
 #[test]
 fn vault_created_with_restrictive_permissions() {
