@@ -11,6 +11,9 @@ profile pw ${PATH_TO_EXECUTABLE}/pw {
     network unix,
     owner /run/user/@{uid}/gdm/Xauthority r,
 
+    # Wayland clipboard access
+    owner /run/user/@{uid}/.mutter-Xwaylandauth* r,
+
     owner @{HOME}/ r,
     owner @{HOME}/pw.scrypt rwk,
     owner @{HOME}/pw.scrypt.bak rwk,
