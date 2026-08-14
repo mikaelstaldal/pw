@@ -46,12 +46,45 @@
       .user {
         color: #666;
       }
+      #footer {
+        display: flex;
+        align-items: center;
+        margin-top: 10px;
+      }
+      #vault {
+        font: inherit;
+        background: #f3f3f3;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        padding: 3px 10px;
+        cursor: pointer;
+      }
+      #vault:hover:enabled {
+        background: #e7e7e7;
+      }
+      #vault[hidden] {
+        display: none;
+      }
+      #settings {
+        font: inherit;
+        background: none;
+        border: none;
+        padding: 0;
+        margin-left: auto;
+        color: #0060df;
+        text-decoration: underline;
+        cursor: pointer;
+      }
     </style>
   </head>
   <body>
     <h1>pw</h1>
     <div id="status">Looking up login…</div>
     <ul id="list"></ul>
+    <div id="footer">
+      <button id="vault" hidden></button>
+      <button id="settings">Settings</button>
+    </div>
     <script src="popup.js"></script>
   </body>
 </html>

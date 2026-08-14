@@ -108,6 +108,11 @@ Then load the add-on in `webextension/` (see `webextension/README.md` for
 temporary loading during development and signing for permanent installation).
 On a login page, click the toolbar button or press `Ctrl+Alt+L`.
 
+The toolbar popup also has an **Unlock** button (**Lock** once open). It
+prompts for the master passphrase in `pinentry` and caches the decrypted vault
+in the host for `cache_minutes`, but fills nothing and releases no entry, so
+you can open the vault when it suits you rather than when a fill needs it.
+
 Behaviour is configured in `~/.config/pw/browser.json`:
 
 ```json
@@ -117,11 +122,49 @@ Behaviour is configured in `~/.config/pw/browser.json`:
 - `cache_minutes` — how long a decrypted vault stays in the host's memory
   before it re-prompts (`0` re-prompts every time).
 
+### HTTP authentication (opt-in)
+
+The add-on can also answer a site's **HTTP authentication** challenge — the
+browser's own username/password dialog — from the vault. Firefox's prompt is
+browser chrome rather than page content, so nothing can type into it; instead
+the `401` is answered before the prompt is shown, and it never appears.
+
+This needs permission to see requests to all sites, so it is **off by default**
+and is not part of the install-time permissions. Turn it on in `about:addons` →
+*pw* → *Preferences*. A challenge is then answered only when it is a top-level
+page load (never an image, script or iframe), on `https:` (or loopback) and not
+a proxy, and exactly one entry matches the site. Anything else falls through to
+the browser's dialog, and credentials the server rejects are never retried.
+
+Because nothing the user did triggers it, this path is **stricter than a form
+fill in two ways**, both enforced by the host rather than the browser, on the
+same request that returns the credential:
+
+- **The site must match exactly.** A form fill accepts a parent domain, so an
+  entry for `example.com` fills on `www.example.com` — reasonable when you are
+  looking at the page and clicked to fill it. Here it is not: a subdomain
+  someone else controls (a dangling CNAME, shared hosting, one tenant of a
+  multi-tenant apex) could otherwise collect the parent domain's password with
+  no dialog to notice. This also matches how HTTP authentication scopes
+  credentials itself — a protection space is one origin, never a domain tree.
+- **A locked vault is never unlocked.** The request the extension sends
+  (`get-logins-strict`) is answered with `locked` instead of a passphrase
+  prompt, so no page load can make a `pinentry` dialog appear. Unlock
+  deliberately, from the toolbar popup.
+
+Because it never prompts by itself, this is what the popup's **Unlock** button
+is for: unlock once, then HTTP-auth sites open without a dialog until the
+host's cache expires.
+
 ### Security model
 
 | Threat | Mitigation |
 |---|---|
-| Malicious/XSS'd page harvesting autofill | No fill without a user gesture; no always-on content script; the page cannot trigger the extension. |
+| Malicious/XSS'd page harvesting autofill | No fill without a user gesture; no always-on content script; the page cannot trigger the extension. Opt-in HTTP-auth filling is the one gesture-less path, and answers only the challenging site itself (see the rows below). |
+| Hidden `<img>`/`<iframe>` making the browser submit credentials in the background | HTTP-auth challenges are answered only for top-level page loads, so no subresource or embedded frame is ever answered — those get the browser's dialog. |
+| Attacker-controlled subdomain of a site you have an entry for (takeover, shared hosting, multi-tenant apex) collecting its password | The HTTP-auth path matches the host exactly: `example.com` is not released to `evil.example.com`. Parent-domain matching applies only to a fill you asked for by clicking, on a page in front of you. |
+| Page trying to force a master-passphrase prompt | The HTTP-auth path sends `get-logins-strict`, which the host answers with `locked` rather than prompting, so no page load can raise a `pinentry` dialog. The guarantee lives in the host, on the request that would return the credential — not in a separate check the vault could expire behind. |
+| Extension observing all browsing once HTTP-auth filling is on | The permissions it needs are optional, granted by you at runtime, revocable in `about:addons`, and limited to `https:` plus loopback; without them the extension has no host permissions at all. |
 | Page spoofing its origin | The origin is taken from the tab URL in the background script, never from page or content-script input. |
 | Phishing domain (`github.com.evil.example`) | Suffix matching at label boundaries bounded by the Public Suffix List — only `evil.example`'s own entries can match. |
 | Rogue extension talking to the host | `allowed_extensions` in the manifest pins `pw@staldal.nu`; Firefox (and the snap portal) enforces it. |

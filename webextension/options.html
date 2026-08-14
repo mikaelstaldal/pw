@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>pw settings</title>
+    <style>
+      body {
+        font: 14px/1.5 system-ui, sans-serif;
+        margin: 0;
+        padding: 20px;
+        max-width: 44em;
+        color: #222;
+      }
+      h1 {
+        font-size: 16px;
+        margin: 0 0 16px;
+      }
+      section {
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        padding: 12px 14px;
+      }
+      h2 {
+        font-size: 14px;
+        margin: 0 0 6px;
+      }
+      p {
+        margin: 0 0 10px;
+      }
+      ul {
+        margin: 0 0 10px;
+        padding-left: 20px;
+      }
+      .muted {
+        color: #666;
+      }
+      button {
+        font: inherit;
+        padding: 5px 12px;
+        border: 1px solid #bbb;
+        border-radius: 4px;
+        background: #f3f3f3;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #e7e7e7;
+      }
+      #state {
+        margin-left: 10px;
+      }
+      #state.on {
+        color: #2e7d32;
+      }
+      #state.error {
+        color: #c62828;
+      }
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: #23222b;
+          color: #fbfbfe;
+        }
+        section {
+          border-color: #52525e;
+        }
+        .muted {
+          color: #b1b1bd;
+        }
+        button {
+          background: #2b2a33;
+          border-color: #52525e;
+          color: inherit;
+        }
+        button:hover {
+          background: #3a3944;
+        }
+        #state.on {
+          color: #7bc47f;
+        }
+        #state.error {
+          color: #ff9aa2;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>pw</h1>
+    <section>
+      <h2>Fill HTTP authentication dialogs</h2>
+      <p>
+        Answer a site's HTTP authentication challenge (the browser's own
+        username/password dialog) from your vault, instead of showing the
+        dialog.
+      </p>
+      <p class="muted">
+        This needs permission to see requests to all sites, which is why it is
+        off by default. When it is on, pw answers a challenge only when:
+      </p>
+      <ul class="muted">
+        <li>it is a page you navigated to — never an image, script or frame;</li>
+        <li>the site is <code>https:</code> (or loopback), never a proxy;</li>
+        <li>the vault is already unlocked — it never prompts for your master
+          passphrase by itself;</li>
+        <li>exactly one entry matches the site.</li>
+      </ul>
+      <p class="muted">
+        In every other case the browser's own dialog appears, as it does today.
+      </p>
+      <button id="toggle" disabled>…</button>
+      <span id="state"></span>
+    </section>
+    <script src="auth-permissions.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

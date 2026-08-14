@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "pw",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Fill logins from the pw password manager, without the clipboard.",
   "browser_specific_settings": {
     "gecko": {
@@ -17,8 +17,19 @@
     "activeTab",
     "menus"
   ],
+  "optional_permissions": [
+    "webRequest",
+    "webRequestBlocking",
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
   "background": {
-    "scripts": ["background.js"],
+    "scripts": ["auth-permissions.js", "background.js"],
     "persistent": true
   },
   "icons": {

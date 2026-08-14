@@ -68,6 +68,20 @@ struct Host {
     cache: Option<Cache>,
 }
 
+/// How a `get-logins*` request selects entries, and whether it may prompt.
+#[derive(Clone, Copy, PartialEq)]
+enum Strictness {
+    /// `get-logins`: parent-domain matching up to the registrable domain, and
+    /// may unlock via pinentry. The browser only sends it behind a user
+    /// gesture, so both are the user's own doing.
+    Normal,
+    /// `get-logins-strict`: the visited host must equal the entry's `url` host
+    /// exactly, and a locked vault is answered with `locked` rather than a
+    /// prompt. For the browser's HTTP-authentication path, which answers a
+    /// challenge with no user gesture behind it.
+    Strict,
+}
+
 /// Why an unlock could not produce decrypted entries; each maps to a protocol
 /// error code (§6).
 enum UnlockError {
@@ -110,7 +124,13 @@ impl Host {
             ));
         }
         match request.typ.as_deref() {
-            Some("get-logins") => self.get_logins(id, request.origin.as_deref()),
+            Some("get-logins") => {
+                self.get_logins(id, request.origin.as_deref(), Strictness::Normal)
+            }
+            Some("get-logins-strict") => {
+                self.get_logins(id, request.origin.as_deref(), Strictness::Strict)
+            }
+            Some("unlock") => self.unlock(id),
             Some("lock") => {
                 self.relock();
                 Response::Ok { id }.to_bytes()
@@ -130,7 +150,7 @@ impl Host {
         }
     }
 
-    fn get_logins(&mut self, id: u64, origin: Option<&str>) -> Vec<u8> {
+    fn get_logins(&mut self, id: u64, origin: Option<&str>, strictness: Strictness) -> Vec<u8> {
         let Some(origin) = origin else {
             return error(id, "invalid-origin", "request has no origin");
         };
@@ -141,16 +161,28 @@ impl Host {
         };
 
         debug_log::log(&format!(
-            "get-logins eligible hostname={hostname} unlocked={}",
+            "get-logins eligible hostname={hostname} strict={} unlocked={}",
+            strictness == Strictness::Strict,
             self.is_unlocked()
         ));
+        // A strict request must never prompt: the browser sends it without a
+        // user gesture, so a passphrase dialog here would be one a visited
+        // page caused. Declining is not a race — nothing between this check
+        // and the matching below can unlock the vault, because a host handles
+        // one request at a time.
+        if strictness == Strictness::Strict && !self.is_unlocked() {
+            return error(id, "locked", "vault is locked");
+        }
         if let Err(e) = self.ensure_unlocked() {
             debug_log::log("unlock failed");
             return unlock_error(id, e);
         }
 
         let entries = &self.cache.as_ref().expect("unlocked").entries;
-        let matched = pw::matching_entries(&hostname, entries);
+        let matched = match strictness {
+            Strictness::Normal => pw::matching_entries(&hostname, entries),
+            Strictness::Strict => pw::exactly_matching_entries(&hostname, entries),
+        };
         debug_log::log(&format!(
             "unlocked: {} entries, {} match {hostname}",
             entries.len(),
@@ -165,6 +197,25 @@ impl Host {
         Response::Logins {
             id,
             entries: selected,
+        }
+        .to_bytes()
+    }
+
+    /// Unlock on request, so the user can enter the passphrase when it suits
+    /// them rather than when a fill needs it. It releases nothing: no entry is
+    /// read or returned, which keeps it strictly weaker than `get-logins`.
+    fn unlock(&mut self, id: u64) -> Vec<u8> {
+        if let Err(e) = self.ensure_unlocked() {
+            debug_log::log("unlock failed");
+            return unlock_error(id, e);
+        }
+        // Reported after the unlock, so with `cache_minutes: 0` this correctly
+        // says `locked` — the cache expires the instant it is set, and `run`
+        // drops the entries again as soon as this response is written.
+        Response::Status {
+            id,
+            locked: !self.is_unlocked(),
+            version: VERSION,
         }
         .to_bytes()
     }

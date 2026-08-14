@@ -61,6 +61,54 @@ function renderChoices(choices) {
   }
 }
 
+document.getElementById("settings").addEventListener("click", () => {
+  browser.runtime.openOptionsPage();
+  window.close();
+});
+
+// Unlock/lock the vault without filling anything. Unlocking here is what makes
+// a later fill — or an HTTP-auth challenge, which never prompts on its own —
+// happen without a passphrase dialog.
+const vaultEl = document.getElementById("vault");
+
+function renderVault(locked) {
+  vaultEl.hidden = false;
+  vaultEl.disabled = false;
+  vaultEl.textContent = locked ? "Unlock" : "Lock";
+  vaultEl.dataset.locked = locked ? "yes" : "";
+}
+
+vaultEl.addEventListener("click", async () => {
+  const wasLocked = vaultEl.dataset.locked === "yes";
+  vaultEl.disabled = true;
+  if (wasLocked) {
+    // pinentry takes focus, which closes this popup; the unlock still
+    // completes in the background script.
+    showStatus("Enter your passphrase in the pinentry window…");
+  }
+  const result = await browser.runtime.sendMessage({
+    cmd: wasLocked ? "unlock" : "lock",
+  });
+  if (!result || result.error) {
+    showStatus(result ? result.error : "No response from the pw host.", true);
+    vaultEl.disabled = false;
+    return;
+  }
+  renderVault(result.locked);
+  if (!result.locked) {
+    showStatus("Vault unlocked.");
+  } else if (wasLocked) {
+    showStatus("Unlocked, but this host does not cache it (cache_minutes 0).");
+  } else {
+    showStatus("Vault locked.");
+  }
+});
+
+async function refreshVault() {
+  const result = await browser.runtime.sendMessage({ cmd: "status" });
+  if (result && !result.error) renderVault(result.locked);
+}
+
 async function init() {
   let result;
   try {
@@ -86,4 +134,5 @@ async function init() {
   showStatus("Nothing to fill.", true);
 }
 
+refreshVault();
 init();

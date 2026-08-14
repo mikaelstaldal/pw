@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.0 (2026-08-14)
+
+- New `get-logins-strict` request on `pw-browser-host`, used by the extension's
+  HTTP-authentication path (which has no user gesture behind it). It differs
+  from `get-logins` in two ways, both enforced in the host: the visited host
+  must equal the entry's `url` host **exactly**, so a subdomain under someone
+  else's control cannot silently collect a parent domain's password; and a
+  locked vault is answered with a new `locked` error instead of a `pinentry`
+  prompt, so the no-prompt guarantee holds on the same request that returns the
+  credential rather than in a separate check the cache could expire behind.
+  New library function `pw::exactly_matching_entries` implements the match. A
+  host too old to know the request type answers `error/internal`, which the
+  extension declines — it never falls back to the looser rule.
+
+- The toolbar popup can unlock and lock the vault on its own: a new `unlock`
+  request makes `pw-browser-host` prompt via `pinentry` and cache the decrypted
+  vault without matching, reading or releasing any entry — strictly weaker than
+  `get-logins`. It answers with the `status` payload, so a host configured with
+  `cache_minutes: 0` truthfully reports itself still locked.
+
+- The Firefox add-on can fill **HTTP authentication** (the browser's own
+  username/password dialog) from the vault, answering the `401` before the
+  dialog is shown. It is off by default: the `webRequest`/`webRequestBlocking`
+  and host permissions it needs are optional and granted from the add-on's new
+  options page (`about:addons` → *pw* → *Preferences*), and revocable there.
+  Only top-level page loads on `https:` (or loopback) are answered, only while
+  the vault is already unlocked, and only when exactly one entry matches;
+  everything else falls through to the browser's dialog. No change to
+  `pw-browser-host` or the wire protocol.
+
 ## 0.3.0 (2026-06-14)
 
 ### Firefox web integration

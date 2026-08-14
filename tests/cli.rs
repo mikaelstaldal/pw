@@ -432,7 +432,14 @@ fn show_prints_attributes_without_password() {
     let dir = TempDir::new().unwrap();
     let vault = init_vault(&dir);
     pw(&vault)
-        .args(["add", "work-github", "alice", "--url", "github.com", "--show"])
+        .args([
+            "add",
+            "work-github",
+            "alice",
+            "--url",
+            "github.com",
+            "--show",
+        ])
         .write_stdin(PASSPHRASE)
         .assert()
         .success();
@@ -460,7 +467,11 @@ fn show_omits_absent_username_and_url() {
         .write_stdin(PASSPHRASE)
         .assert()
         .success()
-        .stdout(contains("name: bare").and(contains("username").not()).and(contains("url").not()));
+        .stdout(
+            contains("name: bare")
+                .and(contains("username").not())
+                .and(contains("url").not()),
+        );
 }
 
 #[test]

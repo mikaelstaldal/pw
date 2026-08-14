@@ -43,7 +43,7 @@ Error types are layered the same way: `scrypt_format::Error` → `vault::Error` 
 
 - Default scrypt KDF parameters (`N=2^17`) are deliberately slow; tests always use `log_n = 12`. Unit tests pass small `Params` directly; CLI tests use the hidden global flag `--scrypt-log-n 12` together with `--passphrase-stdin`.
 - CLI tests (`tests/cli.rs`) use `assert_cmd`/`assert_fs`/`predicates` against the real binary in a temp dir.
-- Browser-host protocol tests (`tests/host.rs`) frame JSON to `pw-browser-host`'s stdin and assert the responses; they cover only paths that need neither `pinentry` nor a real vault (`status`, `lock`, ineligible/missing origin, unknown type).
+- Browser-host protocol tests (`tests/host.rs`) frame JSON to `pw-browser-host`'s stdin and assert the responses. The simple cases (`status`, `lock`, ineligible/missing origin, unknown type) need neither `pinentry` nor a vault; the unlocking ones (`get-logins`, `unlock`) go through `Fixture`, which builds a temporary vault, host config and stub `pinentry` in a temp dir. Always point a test at a `Fixture` config, never at the default one: a test that unlocks against the default config would prompt for the passphrase of the developer's real `~/pw.scrypt` and hang.
 
 ## Other notes
 

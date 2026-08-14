@@ -397,6 +397,35 @@ pub fn matching_entries<'a>(
         .collect()
 }
 
+/// Entries whose `url` host is *exactly* `hostname`, with no parent-domain
+/// match.
+///
+/// [`matching_entries`] deliberately accepts a parent domain, which is right
+/// for a fill the user asks for on the page in front of them. It is wrong for a
+/// release with no user gesture behind it — HTTP authentication — where a
+/// subdomain under someone else's control (a dangling-CNAME takeover, shared
+/// hosting, one tenant of a multi-tenant apex) could otherwise collect the
+/// parent domain's password silently, with no dialog to notice. Exact matching
+/// is also how HTTP authentication scopes credentials in the first place: a
+/// protection space is a single origin, never a domain tree.
+pub fn exactly_matching_entries<'a>(
+    hostname: &str,
+    entries: &'a [PasswordEntry],
+) -> Vec<&'a PasswordEntry> {
+    let Some(host) = normalize_host(hostname) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter(|e| {
+            e.url
+                .as_deref()
+                .and_then(url_host)
+                .is_some_and(|c| c == host)
+        })
+        .collect()
+}
+
 /// IDNA/punycode-normalize a hostname to lowercase ASCII, or `None` if it is
 /// not a usable domain. `domain_to_ascii` already lowercases and rejects the
 /// empty string and malformed labels.
@@ -726,9 +755,59 @@ mod tests {
             .collect()
     }
 
+    /// The same, for the gesture-less path's stricter rule.
+    fn matches_exactly(hostname: &str, urls: &[&str]) -> Vec<String> {
+        let entries: Vec<PasswordEntry> = urls
+            .iter()
+            .enumerate()
+            .map(|(i, u)| with_url(&format!("entry-{i}"), u))
+            .collect();
+        exactly_matching_entries(hostname, &entries)
+            .into_iter()
+            .filter_map(|e| e.url.clone())
+            .collect()
+    }
+
     #[test]
     fn matches_exact_hostname() {
         assert_eq!(matches("github.com", &["github.com"]), vec!["github.com"]);
+    }
+
+    #[test]
+    fn exact_matching_rejects_parent_domain() {
+        // The heart of it: a subdomain someone else may control must not be
+        // able to collect the parent domain's credentials without a gesture.
+        assert!(matches_exactly("evil.example.com", &["example.com"]).is_empty());
+        // ...while the ordinary, user-driven fill still accepts it.
+        assert_eq!(
+            matches("evil.example.com", &["example.com"]),
+            vec!["example.com"]
+        );
+    }
+
+    #[test]
+    fn exact_matching_accepts_only_the_same_host() {
+        assert_eq!(
+            matches_exactly("login.example.com", &["login.example.com"]),
+            vec!["login.example.com"]
+        );
+        // Still normalized: case, IDNA, ports, full URLs and userinfo.
+        assert_eq!(
+            matches_exactly("github.com", &["GitHub.com"]),
+            vec!["GitHub.com"]
+        );
+        assert_eq!(
+            matches_exactly("github.com", &["https://user@github.com:8443/login"]),
+            vec!["https://user@github.com:8443/login"]
+        );
+        assert_eq!(
+            matches_exactly("xn--bcher-kva.example", &["bücher.example"]).len(),
+            1
+        );
+        // Neither direction of a parent/child relation, and no unrelated host.
+        assert!(matches_exactly("example.com", &["login.example.com"]).is_empty());
+        assert!(matches_exactly("example.com", &["example.org"]).is_empty());
+        assert!(matches_exactly("example.com", &[""]).is_empty());
     }
 
     #[test]
