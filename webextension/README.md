@@ -94,11 +94,16 @@ the normal dialog appears, exactly as it does today:
   is answered with `locked` rather than a passphrase prompt, so a page load
   cannot summon a `pinentry` dialog. Use the popup's **Unlock** button before
   you need it, or fill a form somewhere first;
-- exactly one entry matches the site (there is no user gesture here, so the
-  picker cannot be shown).
+- at least one entry matches the site. If several do — separate realms under
+  one domain, each with its own username — the popup opens and asks which one,
+  naming the challenging host and realm; the page load waits, and nothing is
+  released until you pick. Closing the popup, or leaving it for a minute, gives
+  the challenge back to the dialog. Only the active tab is asked about, since
+  that is the tab the popup belongs to; a challenge in a background tab gets
+  the dialog.
 
 Credentials that the server rejects are not retried: the second challenge for
-the same request falls through to the dialog.
+the same request falls through to the dialog, chooser or not.
 
 When pw does answer, the toolbar button shows a green ✓ for three seconds once
 the page has loaded — the only sign that it happened, since no dialog appears.
@@ -129,5 +134,7 @@ passphrase or stalled.
 - Top-level frame only; login forms inside cross-origin iframes are not filled.
 - No form detection/highlighting, no save-on-submit, no password generation.
 - Fields in closed shadow DOM are not reachable.
-- HTTP authentication is answered only for a single match on a top-level load
-  with the vault unlocked (see above); the realm is not matched, only the host.
+- HTTP authentication is answered only on a top-level load in the active tab
+  with the vault unlocked (see above). Entries are matched by host only, never
+  by realm; when several match, the realm is shown in the chooser rather than
+  used to select for you.

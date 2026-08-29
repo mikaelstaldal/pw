@@ -5,6 +5,16 @@
 const statusEl = document.getElementById("status");
 const listEl = document.getElementById("list");
 
+// A port with no messages on it: the background script watches it disconnect
+// so that an HTTP-authentication challenge waiting on a choice here falls
+// through to Firefox's own dialog the moment this popup goes away.
+browser.runtime.connect({ name: "pw-popup" });
+
+async function currentTab() {
+  const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+  return tabs[0];
+}
+
 function showStatus(text, isError) {
   statusEl.textContent = text;
   statusEl.classList.toggle("error", !!isError);
@@ -24,15 +34,22 @@ function clearList() {
   while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
 }
 
+// Send `cmd` for the picked entry and report what came back. Anything thrown
+// on the way is shown too: the chooser has already been cleared away, so a
+// silent failure here would leave the popup looking like nothing happened.
+async function send(cmd, name) {
+  const tab = await currentTab();
+  try {
+    return await browser.runtime.sendMessage({ cmd, tabId: tab.id, name });
+  } catch (e) {
+    return { error: "Error: " + e.message };
+  }
+}
+
 async function choose(name) {
   showStatus("Filling…");
   clearList();
-  const tab = (await browser.tabs.query({ active: true, currentWindow: true }))[0];
-  const result = await browser.runtime.sendMessage({
-    cmd: "pick",
-    tabId: tab.id,
-    name,
-  });
+  const result = await send("pick", name);
   if (!result || result.error) {
     showStatus(result ? result.error : "No response.", true);
     return;
@@ -41,7 +58,24 @@ async function choose(name) {
   setTimeout(() => window.close(), 900);
 }
 
-function renderChoices(choices) {
+// The same chooser, for the HTTP-authentication challenge the background
+// script is holding. The credential goes from there straight to the challenge;
+// this popup never sees it, and there is no page to fill.
+async function chooseAuth(name) {
+  showStatus("Signing in…");
+  clearList();
+  const result = await send("pick-auth", name);
+  if (!result || result.error) {
+    showStatus(result ? result.error : "No response.", true);
+    return;
+  }
+  showStatus(
+    result.username ? "Signing in as " + result.username + "…" : "Signing in…"
+  );
+  setTimeout(() => window.close(), 900);
+}
+
+function renderChoices(choices, onPick) {
   for (const choice of choices) {
     const li = document.createElement("li");
     const button = document.createElement("button");
@@ -55,7 +89,7 @@ function renderChoices(choices) {
       user.textContent = " — " + choice.username;
       button.appendChild(user);
     }
-    button.addEventListener("click", () => choose(choice.name));
+    button.addEventListener("click", () => onPick(choice.name));
     li.appendChild(button);
     listEl.appendChild(li);
   }
@@ -109,6 +143,25 @@ async function refreshVault() {
   if (result && !result.error) renderVault(result.locked);
 }
 
+// Name the protection space the challenge came from, so realms that share a
+// host — which is exactly when this chooser appears — can be told apart.
+//
+// The realm is the server's own text, so it is stripped of control, bidi and
+// zero-width characters and kept short: it must read as a label, and it must
+// not be able to dress itself up as the rest of the sentence. It is rendered
+// as text, never as markup.
+function describeChallenge(result) {
+  const host = result.host || "This site";
+  const realm = (result.realm || "")
+    .replace(
+      /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069]/g,
+      ""
+    )
+    .trim()
+    .slice(0, 60);
+  return realm ? host + " “" + realm + "”" : host;
+}
+
 async function init() {
   let result;
   try {
@@ -126,9 +179,14 @@ async function init() {
     setTimeout(() => window.close(), 900);
     return;
   }
+  if (result.authChoices && result.authChoices.length) {
+    showStatus(describeChallenge(result) + " is asking for a login:");
+    renderChoices(result.authChoices, chooseAuth);
+    return;
+  }
   if (result.choices && result.choices.length) {
     showStatus("Choose a login:");
-    renderChoices(result.choices);
+    renderChoices(result.choices, choose);
     return;
   }
   showStatus("Nothing to fill.", true);

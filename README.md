@@ -133,8 +133,16 @@ This needs permission to see requests to all sites, so it is **off by default**
 and is not part of the install-time permissions. Turn it on in `about:addons` →
 *pw* → *Preferences*. A challenge is then answered only when it is a top-level
 page load (never an image, script or iframe), on `https:` (or loopback) and not
-a proxy, and exactly one entry matches the site. Anything else falls through to
+a proxy, and at least one entry matches the site. Anything else falls through to
 the browser's dialog, and credentials the server rejects are never retried.
+
+When several entries match the site — separate realms under one domain, each
+with its own username — the challenge itself cannot say which one is wanted, so
+the toolbar popup opens and asks, naming the host and the realm. The page load
+waits for the answer, and nothing is released until you pick one; closing the
+popup (or leaving it a minute) hands the challenge back to the browser's own
+dialog. A challenge in a background tab is never asked about — the popup speaks
+for the active tab only — so that one gets the browser's dialog too.
 
 Because nothing the user did triggers it, this path is **stricter than a form
 fill in two ways**, both enforced by the host rather than the browser, on the
@@ -163,6 +171,7 @@ host's cache expires.
 | Malicious/XSS'd page harvesting autofill | No fill without a user gesture; no always-on content script; the page cannot trigger the extension. Opt-in HTTP-auth filling is the one gesture-less path, and answers only the challenging site itself (see the rows below). |
 | Hidden `<img>`/`<iframe>` making the browser submit credentials in the background | HTTP-auth challenges are answered only for top-level page loads, so no subresource or embedded frame is ever answered — those get the browser's dialog. |
 | Attacker-controlled subdomain of a site you have an entry for (takeover, shared hosting, multi-tenant apex) collecting its password | The HTTP-auth path matches the host exactly: `example.com` is not released to `evil.example.com`. Parent-domain matching applies only to a fill you asked for by clicking, on a page in front of you. |
+| Site provoking `401`s to pop the chooser up repeatedly | The chooser only appears for a top-level load of a host you already have two or more entries for, in the tab you are looking at, with the vault already unlocked — and it releases nothing until you click an entry. Dismissing it hands the challenge to the browser's dialog. |
 | Page trying to force a master-passphrase prompt | The HTTP-auth path sends `get-logins-strict`, which the host answers with `locked` rather than prompting, so no page load can raise a `pinentry` dialog. The guarantee lives in the host, on the request that would return the credential — not in a separate check the vault could expire behind. |
 | Extension observing all browsing once HTTP-auth filling is on | The permissions it needs are optional, granted by you at runtime, revocable in `about:addons`, and limited to `https:` plus loopback; without them the extension has no host permissions at all. |
 | Page spoofing its origin | The origin is taken from the tab URL in the background script, never from page or content-script input. |

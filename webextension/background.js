@@ -90,16 +90,26 @@ function errorMessage(resp) {
 
 // Inject the fill script (top-level frame only) and hand it the credential.
 // The credential exists only as arguments here and is dropped when this
-// function returns (§5.1 step 6).
+// function returns (§5.1 step 6). Returns what the popup should render, so a
+// page the script cannot reach becomes a message rather than a rejection the
+// popup would have to guess at.
 async function fillTab(tabId, entry) {
-  await browser.tabs.executeScript(tabId, { file: "/fill.js" });
-  const result = await browser.tabs.sendMessage(tabId, {
-    type: "pw-fill",
-    username: entry.username,
-    password: entry.password,
-  });
+  let result;
+  try {
+    await browser.tabs.executeScript(tabId, { file: "/fill.js" });
+    result = await browser.tabs.sendMessage(tabId, {
+      type: "pw-fill",
+      username: entry.username,
+      password: entry.password,
+    });
+  } catch (e) {
+    // Nothing fillable here: an error page, a viewer, a load still stalled on
+    // an HTTP-authentication dialog — none of them run a content script.
+    setBadge(tabId, false);
+    return { error: "Nothing to fill on this page: " + e.message };
+  }
   setBadge(tabId, result && result.filledPassword);
-  return result;
+  return { filled: result, name: entry.name };
 }
 
 function setBadge(tabId, ok) {
@@ -116,6 +126,22 @@ function setBadge(tabId, ok) {
 async function fillFlow() {
   const tab = await activeTab();
   if (!tab) return { error: "No active tab." };
+
+  // An HTTP-authentication challenge held for this tab is what the popup was
+  // opened for; it is about the browser's own prompt, not about the page, so
+  // it takes precedence over anything fillable in the document.
+  const challenge = pendingAuthByTab.get(tab.id);
+  if (challenge) {
+    return {
+      authChoices: challenge.entries.map((e) => ({
+        name: e.name,
+        username: e.username,
+      })),
+      host: challenge.host,
+      realm: challenge.realm,
+    };
+  }
+
   const origin = originForTab(tab);
   if (!origin) return { error: "This page has no fillable origin." };
 
@@ -131,10 +157,7 @@ async function fillFlow() {
 
   const entries = resp.entries || [];
   if (entries.length === 0) return { error: "No matching login." };
-  if (entries.length === 1) {
-    const result = await fillTab(tab.id, entries[0]);
-    return { filled: result, name: entries[0].name };
-  }
+  if (entries.length === 1) return fillTab(tab.id, entries[0]);
 
   // More than one match: keep them for the popup to choose from.
   pendingByTab.set(tab.id, entries);
@@ -149,8 +172,21 @@ async function pick(tabId, name) {
   if (!entries) return { error: "Selection expired; try again." };
   const entry = entries.find((e) => e.name === name);
   if (!entry) return { error: "Selection not found." };
-  const result = await fillTab(tabId, entry);
-  return { filled: result, name: entry.name };
+  return fillTab(tabId, entry);
+}
+
+// The user picked an entry for the HTTP-authentication challenge this tab is
+// waiting on. The credential goes straight back to the held request; it is
+// never returned to the popup.
+async function pickAuth(tabId, name) {
+  const challenge = pendingAuthByTab.get(tabId);
+  if (!challenge) {
+    return { error: "That login prompt is no longer waiting; reload the page." };
+  }
+  const entry = challenge.entries.find((e) => e.name === name);
+  if (!entry) return { error: "Selection not found." };
+  settleAuthChoice(tabId, entry);
+  return { authFilled: true, name: entry.name, username: entry.username };
 }
 
 // Is the vault unlocked? `status` never prompts, so this is free to call.
@@ -190,12 +226,17 @@ async function lockVault() {
     return { error: "Cannot reach the pw host: " + e.message };
   }
   if (!resp || resp.type !== "ok") return { error: "Unexpected reply from the pw host." };
+  // Locking means nothing more is released, so a challenge still waiting on a
+  // choice is declined too, credentials and all — it falls back to Firefox's
+  // own dialog like any other challenge we do not answer.
+  settleAllAuthChoices();
   return { locked: true };
 }
 
 browser.runtime.onMessage.addListener((msg) => {
   if (msg && msg.cmd === "fill-request") return fillFlow();
   if (msg && msg.cmd === "pick") return pick(msg.tabId, msg.name);
+  if (msg && msg.cmd === "pick-auth") return pickAuth(msg.tabId, msg.name);
   if (msg && msg.cmd === "status") return vaultStatus();
   if (msg && msg.cmd === "unlock") return unlockVault();
   if (msg && msg.cmd === "lock") return lockVault();
@@ -230,6 +271,11 @@ browser.menus.onClicked.addListener((info) => {
 // pinentry dialog — and only for an entry whose site is *exactly* the
 // challenging host, so a subdomain someone else controls cannot silently
 // collect the parent domain's password.
+//
+// When several entries match that host — separate realms under one domain,
+// each with its own username — the challenge is held while the popup asks
+// which one to use. Nothing is released until the user picks; closing the
+// popup, or waiting too long, hands the challenge back to Firefox's dialog.
 
 // Requests we have already answered once. A second challenge for the same id
 // means the credentials were refused, and the user gets the native dialog.
@@ -247,7 +293,7 @@ function withTimeout(promise) {
   ]);
 }
 
-// Ask the host for the one entry whose site is exactly this host.
+// Ask the host for the entries whose site is exactly this host.
 //
 // `get-logins-strict` is a different request from the one the form fill uses:
 // it matches the host exactly rather than accepting a parent domain, and it
@@ -265,11 +311,76 @@ async function lookupAuth(origin) {
   }
   if (!resp || resp.type !== "logins") return null;
   const entries = resp.entries || [];
-  // With several matches there is nowhere to ask which one — the popup cannot
-  // be opened without a user gesture — so defer to the native dialog.
-  if (entries.length !== 1) return null;
-  return entries[0];
+  return entries.length ? entries : null;
 }
+
+// How long a challenge may wait for the user to pick one of several matching
+// entries before it falls through to Firefox's dialog. The popup closing ends
+// the wait sooner; this only bounds a popup left open and forgotten.
+const AUTH_CHOICE_TIMEOUT_MS = 60000;
+
+// Challenges held while the popup asks which entry to use, keyed by tab. This
+// is the one place a credential outlives a single function call, and it lives
+// exactly as long as the prompt the user is looking at.
+const pendingAuthByTab = new Map();
+
+// Resolve the tab's held challenge with `entry`, or with null to decline it,
+// and drop the credentials it was holding.
+function settleAuthChoice(tabId, entry) {
+  const challenge = pendingAuthByTab.get(tabId);
+  if (!challenge) return;
+  pendingAuthByTab.delete(tabId);
+  clearTimeout(challenge.timer);
+  challenge.settle(entry);
+}
+
+function settleAllAuthChoices() {
+  for (const tabId of Array.from(pendingAuthByTab.keys())) {
+    settleAuthChoice(tabId, null);
+  }
+}
+
+// Hold the challenge and open the popup to ask which of `entries` to answer
+// with. Resolves with the chosen entry, or null to let the dialog take over.
+async function chooseAuthEntry(details, entries) {
+  const tabId = details.tabId;
+  if (typeof tabId !== "number" || tabId < 0) return null;
+  // The popup always belongs to the active tab, so it can only speak for a
+  // challenge in that tab. One in a background tab gets Firefox's dialog,
+  // which is tab-modal and waits there for the user anyway.
+  const active = await activeTab();
+  if (!active || active.id !== tabId) return null;
+
+  settleAuthChoice(tabId, null); // an older challenge for this tab is moot
+  let settle;
+  const chosen = new Promise((resolve) => {
+    settle = resolve;
+  });
+  pendingAuthByTab.set(tabId, {
+    requestId: details.requestId,
+    entries,
+    host: (details.challenger && details.challenger.host) || "",
+    realm: details.realm || "",
+    settle,
+    timer: setTimeout(() => settleAuthChoice(tabId, null), AUTH_CHOICE_TIMEOUT_MS),
+  });
+
+  try {
+    await browser.browserAction.openPopup();
+  } catch (e) {
+    // No popup — another window has focus, say — means no way to ask.
+    settleAuthChoice(tabId, null);
+  }
+  return chosen;
+}
+
+// The popup opens a port for no other reason than to make its closing
+// observable here: a challenge the user dismissed the popup on should reach
+// Firefox's dialog at once rather than sitting out the timeout.
+browser.runtime.onConnect.addListener((popupPort) => {
+  if (popupPort.name !== "pw-popup") return;
+  popupPort.onDisconnect.addListener(settleAllAuthChoices);
+});
 
 async function provideCredentials(details) {
   if (details.isProxy) return {};
@@ -292,7 +403,14 @@ async function provideCredentials(details) {
     return {};
   }
 
-  const entry = await withTimeout(lookupAuth(url.origin));
+  const entries = await withTimeout(lookupAuth(url.origin));
+  if (!entries) return {};
+
+  // Several entries for one host — different realms, different usernames —
+  // cannot be told apart from the challenge itself, so ask instead of
+  // declining. The request stays open while the popup is up.
+  const entry =
+    entries.length === 1 ? entries[0] : await chooseAuthEntry(details, entries);
   if (!entry) return {};
 
   answeredAuth.add(details.requestId);
@@ -318,6 +436,12 @@ function authCompleted(details) {
 
 function authFailed(details) {
   answeredAuth.delete(details.requestId);
+  // The load we were asking about is gone — the user navigated away or stopped
+  // it — so stop holding its credentials and waiting for an answer.
+  const challenge = pendingAuthByTab.get(details.tabId);
+  if (challenge && challenge.requestId === details.requestId) {
+    settleAuthChoice(details.tabId, null);
+  }
 }
 
 // An HTTP-auth fill is otherwise completely invisible — no dialog, no form
@@ -329,6 +453,7 @@ function badgeAuthFill(tabId, changeInfo) {
 
 function forgetAuthTab(tabId) {
   authFilledTabs.delete(tabId);
+  settleAuthChoice(tabId, null); // the tab that asked is gone
 }
 
 // Registration follows the permission, so revoking it in the options page (or
@@ -339,6 +464,7 @@ function syncAuthListeners(granted) {
     // permission, and this state must be dropped either way.
     answeredAuth.clear();
     authFilledTabs.clear();
+    settleAllAuthChoices();
   }
   if (!browser.webRequest) return; // API absent until the permission is granted
   const registered = browser.webRequest.onAuthRequired.hasListener(provideCredentials);

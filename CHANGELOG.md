@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0 (2026-08-29)
+
+- Firefox add-on: an **HTTP-authentication challenge with several matching
+  entries** — separate realms under one domain, each with its own username — is
+  now answerable. The challenge is held while the toolbar popup opens and asks
+  which entry to use, naming the challenging host and its realm; the credential
+  goes from the background script straight back to the held request, so the
+  popup still never sees a password. Closing the popup, a challenge in a
+  background tab, or a minute with no answer hands the challenge back to
+  Firefox's own dialog, as does a picked credential the server rejects.
+  Previously such a challenge was declined outright, and the popup's chooser —
+  which fills page forms — appeared to do nothing when used on it, since an
+  HTTP-authentication prompt is browser chrome with no form to fill.
+
+- Firefox add-on: a fill on a page that runs no content script (an error page,
+  a viewer, a load stalled on an authentication dialog) now reports that
+  instead of leaving the popup stuck on *Filling…*.
+
+- No change to `pw-browser-host`, the wire protocol or the vault format.
+
 ## 0.4.0 (2026-08-14)
 
 - New `get-logins-strict` request on `pw-browser-host`, used by the extension's
