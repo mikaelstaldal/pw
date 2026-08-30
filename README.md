@@ -27,7 +27,7 @@ pw list                      # show all entries
 | `pw get <name> [--show]`                | Copy the password to the clipboard, or print it with `--show`. Prints the username first, if there is one. |
 | `pw list [PATTERN]`                     | List entries, optionally filtered by a case-insensitive substring of the name.                             |
 | `pw add <name> [username] [options]`    | Add an entry. The password is generated (and copied to the clipboard) unless `--input-password` is given.  |
-| `pw update <name> [username] [options]` | Replace the username and password of an existing entry, or just the username/url with `--keep-password`.   |
+| `pw update <name> [username] [options]` | Replace the username and password of an existing entry, or just the username/url/realm with `--keep-password`. |
 | `pw remove <name> [--yes]`              | Remove an entry, after confirmation (`--yes` skips it).                                                    |
 | `pw generate [options]`                 | Generate a password without storing it.                                                                    |
 | `pw export`                             | Print the decrypted vault as JSON on stdout, for backup or migration.                                      |
@@ -43,8 +43,11 @@ Options for `add`, `update` and `generate`:
 - `--url <url>` — the site this entry is for, used by the Firefox integration
   when the entry name is not the hostname (`add`/`update` only); omitting it on
   `update` clears it, like the username
+- `--realm <realm>` — the HTTP authentication realm on that site this entry is
+  for, when the site runs more than one (`add`/`update` only). Requires
+  `--url`, and omitting it on `update` clears it
 - `--keep-password` — on `update`, keep the existing password and change only
-  the username and url (`update` only)
+  the username, url and realm (`update` only)
 - `--show` — print the password to stdout instead of copying it to the
   clipboard
 
@@ -93,6 +96,7 @@ set only with the master passphrase in a terminal:
 pw add github.com alice --url github.com      # declare the site with --url
 pw add work-github alice --url github.com     # name can be anything; the url decides the match
 pw update work-github --url gitlab.com --keep-password   # re-point it, password unchanged
+pw add nas-admin root --url nas.example --realm "Admin Area"   # one realm on a host
 ```
 
 A compromised browser therefore cannot make the host release an entry for a
@@ -136,17 +140,35 @@ page load (never an image, script or iframe), on `https:` (or loopback) and not
 a proxy, and at least one entry matches the site. Anything else falls through to
 the browser's dialog, and credentials the server rejects are never retried.
 
-When several entries match the site — separate realms under one domain, each
-with its own username — the challenge itself cannot say which one is wanted, so
-the toolbar popup opens and asks, naming the host and the realm. The page load
+A site can run several realms — separate protection spaces, each with its own
+username — under one host, which the host part alone cannot tell apart. Name
+the realm on the entry and the match is unambiguous:
+
+```sh
+pw add nas-admin root  --url nas.example --realm "Admin Area"
+pw add nas-wiki  alice --url nas.example --realm "Wiki"
+```
+
+Among the entries on a host, one naming the challenged realm wins outright; if
+none does, the entries naming *no* realm are used, since an untagged entry is a
+wildcard over its host — which is what every entry written before this existed
+is, so an unrealmed vault behaves exactly as it did. An entry naming a
+*different* realm is never released, even when nothing else matches: being told
+the credential belongs to another protection space is reason enough to withhold
+it. Realms are compared as exact strings, as the protocol defines them — an
+opaque quoted string, not a case-insensitive token. A form fill ignores the
+realm entirely: a login form belongs to no protection space.
+
+When several entries still match — two untagged entries on one host, say — the
+toolbar popup opens and asks, naming the host and the realm. The page load
 waits for the answer, and nothing is released until you pick one; closing the
 popup (or leaving it a minute) hands the challenge back to the browser's own
 dialog. A challenge in a background tab is never asked about — the popup speaks
 for the active tab only — so that one gets the browser's dialog too.
 
 Because nothing the user did triggers it, this path is **stricter than a form
-fill in two ways**, both enforced by the host rather than the browser, on the
-same request that returns the credential:
+fill in two further ways**, both enforced by the host rather than the browser,
+on the same request that returns the credential:
 
 - **The site must match exactly.** A form fill accepts a parent domain, so an
   entry for `example.com` fills on `www.example.com` — reasonable when you are
@@ -155,14 +177,36 @@ same request that returns the credential:
   multi-tenant apex) could otherwise collect the parent domain's password with
   no dialog to notice. This also matches how HTTP authentication scopes
   credentials itself — a protection space is one origin, never a domain tree.
-- **A locked vault is never unlocked.** The request the extension sends
-  (`get-logins-strict`) is answered with `locked` instead of a passphrase
-  prompt, so no page load can make a `pinentry` dialog appear. Unlock
-  deliberately, from the toolbar popup.
+- **A locked vault is never unlocked behind your back.** The request the
+  extension sends (`get-logins-strict`) is answered with `locked` instead of a
+  passphrase prompt, so no page load can make a `pinentry` dialog appear.
+  Unlock deliberately, from the toolbar popup.
 
-Because it never prompts by itself, this is what the popup's **Unlock** button
-is for: unlock once, then HTTP-auth sites open without a dialog until the
-host's cache expires.
+So the popup's **Unlock** button is the tidiest way in: unlock once, and
+HTTP-auth sites then open with no interruption at all until the host's cache
+expires. You do not have to think that far ahead, though — see below.
+
+#### Offering to unlock from a challenge
+
+Having to unlock *before* navigating would be the awkward part of the above, so
+a challenge that finds the vault locked is **held open** — the same mechanism
+that holds one while the chooser is up — and the popup offers to unlock,
+instead of the challenge falling straight through to the browser's dialog.
+
+The passphrase prompt is still yours to raise: what a page can summon is the
+popup, which releases nothing, and `pinentry` appears only when you click
+*Unlock and sign in*. The click sends a third request type,
+`get-logins-strict-unlock`: exact matching as above, but permitted to prompt,
+with the unlocking and the matching in one request so nothing can relock in
+between (with `cache_minutes: 0` something always would). If several entries
+then match, the ordinary chooser follows in a freshly opened popup —
+`pinentry` taking focus closes the one that started it.
+
+What it costs: until the vault is open pw cannot tell whether it has an entry
+for the site at all, so the offer necessarily comes *before* that is known —
+any `https:` site that returns `401` can put it up. To bound the nuisance, a
+host whose offer goes unanswered is not asked about again for five minutes, and
+the offer still requires a top-level load in the tab you are looking at.
 
 ### Security model
 
@@ -171,8 +215,10 @@ host's cache expires.
 | Malicious/XSS'd page harvesting autofill | No fill without a user gesture; no always-on content script; the page cannot trigger the extension. Opt-in HTTP-auth filling is the one gesture-less path, and answers only the challenging site itself (see the rows below). |
 | Hidden `<img>`/`<iframe>` making the browser submit credentials in the background | HTTP-auth challenges are answered only for top-level page loads, so no subresource or embedded frame is ever answered — those get the browser's dialog. |
 | Attacker-controlled subdomain of a site you have an entry for (takeover, shared hosting, multi-tenant apex) collecting its password | The HTTP-auth path matches the host exactly: `example.com` is not released to `evil.example.com`. Parent-domain matching applies only to a fill you asked for by clicking, on a page in front of you. |
-| Site provoking `401`s to pop the chooser up repeatedly | The chooser only appears for a top-level load of a host you already have two or more entries for, in the tab you are looking at, with the vault already unlocked — and it releases nothing until you click an entry. Dismissing it hands the challenge to the browser's dialog. |
-| Page trying to force a master-passphrase prompt | The HTTP-auth path sends `get-logins-strict`, which the host answers with `locked` rather than prompting, so no page load can raise a `pinentry` dialog. The guarantee lives in the host, on the request that would return the credential — not in a separate check the vault could expire behind. |
+| Site provoking `401`s to pop the chooser up repeatedly | The chooser only appears for a top-level load of a host you already have two or more entries for *in the challenged realm*, in the tab you are looking at, with the vault open — and it releases nothing until you click an entry. Dismissing it hands the challenge to the browser's dialog. |
+| Site naming another site's realm to collect its credential | The realm only ever narrows a match the host has already made exactly: an entry is released to `nas.example` and no other host, whatever realm is claimed. A realm is a label within a host, never across hosts. |
+| Site provoking `401`s to nag you into unlocking | A host whose offer you dismiss is not asked about again for five minutes, and the offer needs a top-level load in the active tab. The offer itself releases nothing and reveals nothing about the vault — pw cannot tell whether it has an entry for the site until you unlock — and it is only ever an offer: the passphrase prompt takes your click. |
+| Page trying to force a master-passphrase prompt | The HTTP-auth path sends `get-logins-strict`, which the host answers with `locked` rather than prompting, so no page load can raise a `pinentry` dialog. The guarantee lives in the host, on the request that would return the credential — not in a separate check the vault could expire behind. The one request that may prompt, `get-logins-strict-unlock`, is sent only from your click on the popup's own unlock button — a page can summon the popup, never `pinentry`. |
 | Extension observing all browsing once HTTP-auth filling is on | The permissions it needs are optional, granted by you at runtime, revocable in `about:addons`, and limited to `https:` plus loopback; without them the extension has no host permissions at all. |
 | Page spoofing its origin | The origin is taken from the tab URL in the background script, never from page or content-script input. |
 | Phishing domain (`github.com.evil.example`) | Suffix matching at label boundaries bounded by the Public Suffix List — only `evil.example`'s own entries can match. |

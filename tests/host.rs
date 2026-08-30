@@ -154,7 +154,8 @@ struct Fixture {
 
 #[cfg(unix)]
 impl Fixture {
-    /// A fixture whose vault holds one entry for `example.com`.
+    /// A fixture whose vault holds an untagged entry for `example.com` and
+    /// two realm-scoped ones for `multi.example`.
     fn new(cache_minutes: u64) -> Fixture {
         Fixture::build(cache_minutes, true)
     }
@@ -180,18 +181,33 @@ impl Fixture {
         if create_vault {
             let passphrase = Passphrase::new("test passphrase".to_string());
             init(&vault, &passphrase, &PARAMS).unwrap();
-            add(
-                &vault,
-                &passphrase,
-                PasswordEntry {
-                    name: "example.com".to_string(),
-                    username: "alice".to_string(),
-                    password: "s3cret".into(),
-                    url: Some("example.com".to_string()),
-                },
-                &PARAMS,
-            )
-            .unwrap();
+            // One untagged entry, plus two realms under a second host: enough
+            // to exercise both the wildcard and the realm-scoped match.
+            for (name, username, password, url, realm) in [
+                ("example.com", "alice", "s3cret", "example.com", None),
+                (
+                    "multi-admin",
+                    "adm",
+                    "adm-pw",
+                    "multi.example",
+                    Some("Admin"),
+                ),
+                ("multi-wiki", "wik", "wik-pw", "multi.example", Some("Wiki")),
+            ] {
+                add(
+                    &vault,
+                    &passphrase,
+                    PasswordEntry {
+                        name: name.to_string(),
+                        username: username.to_string(),
+                        password: password.into(),
+                        url: Some(url.to_string()),
+                        realm: realm.map(str::to_string),
+                    },
+                    &PARAMS,
+                )
+                .unwrap();
+            }
         }
 
         let config = dir.path().join("browser.json");
@@ -404,4 +420,131 @@ fn unlock_without_a_vault_reports_db_missing() {
     assert!(resp.contains(r#""id":9"#), "{resp}");
     host.finish();
     assert_eq!(fixture.pinentry_commands(), "", "must not prompt");
+}
+
+/// `get-logins-strict-unlock` is the escape hatch for the gesture-less path:
+/// the extension sends it only from the click on its own unlock button, so it
+/// may prompt. It must still match the host exactly, and it must do the
+/// unlocking and the matching in one request — with `cache_minutes: 0`, which
+/// is what this fixture uses, a separate `unlock` would have expired before a
+/// following `get-logins-strict` could use it.
+#[cfg(unix)]
+#[test]
+fn strict_unlock_get_logins_prompts_and_still_matches_exactly() {
+    let fixture = Fixture::new(0);
+    let mut host = Host::spawn_with_pinentry(&fixture);
+
+    let resp = host
+        .request(r#"{"id":1,"type":"get-logins-strict-unlock","origin":"https://example.com"}"#);
+    assert!(resp.contains(r#""type":"logins""#), "{resp}");
+    assert!(resp.contains(r#""name":"example.com""#), "{resp}");
+    assert_eq!(
+        fixture.pinentry_commands().matches("GETPIN").count(),
+        1,
+        "{}",
+        fixture.pinentry_commands()
+    );
+
+    // Unlocking does not loosen the matching: a subdomain is still not a match.
+    let resp = host.request(
+        r#"{"id":2,"type":"get-logins-strict-unlock","origin":"https://evil.example.com"}"#,
+    );
+    assert!(resp.contains(r#""code":"no-match""#), "{resp}");
+    assert!(!resp.contains("s3cret"), "{resp}");
+    host.finish();
+}
+
+/// An ineligible origin is refused before anything is decrypted, on the
+/// unlocking variant too — a plain `http:` page must not be able to reach
+/// pinentry through it.
+#[cfg(unix)]
+#[test]
+fn strict_unlock_get_logins_rejects_an_ineligible_origin_without_prompting() {
+    let fixture = Fixture::new(10);
+    let mut host = Host::spawn_with_pinentry(&fixture);
+    let resp =
+        host.request(r#"{"id":1,"type":"get-logins-strict-unlock","origin":"http://example.com"}"#);
+    assert!(resp.contains(r#""code":"invalid-origin""#), "{resp}");
+    host.finish();
+    assert_eq!(fixture.pinentry_commands(), "", "must not prompt");
+}
+
+/// The realm completes the protection space: with it, a host running several
+/// realms releases exactly the entry for the one being challenged, and the
+/// extension's chooser never has to appear.
+#[cfg(unix)]
+#[test]
+fn strict_get_logins_selects_by_realm() {
+    let fixture = Fixture::new(10);
+    let mut host = Host::spawn_with_pinentry(&fixture);
+    assert!(host
+        .request(r#"{"id":1,"type":"unlock"}"#)
+        .contains(r#""locked":false"#));
+
+    let resp = host.request(
+        r#"{"id":2,"type":"get-logins-strict","origin":"https://multi.example","realm":"Admin"}"#,
+    );
+    assert!(resp.contains(r#""name":"multi-admin""#), "{resp}");
+    assert!(!resp.contains("multi-wiki"), "{resp}");
+    assert!(!resp.contains("wik-pw"), "{resp}");
+
+    let resp = host.request(
+        r#"{"id":3,"type":"get-logins-strict","origin":"https://multi.example","realm":"Wiki"}"#,
+    );
+    assert!(resp.contains(r#""name":"multi-wiki""#), "{resp}");
+    assert!(!resp.contains("adm-pw"), "{resp}");
+
+    // A realm no entry names, and a challenge carrying none at all, release
+    // nothing here: both realmed entries say they belong elsewhere.
+    for request in [
+        r#"{"id":4,"type":"get-logins-strict","origin":"https://multi.example","realm":"Other"}"#,
+        r#"{"id":5,"type":"get-logins-strict","origin":"https://multi.example"}"#,
+    ] {
+        let resp = host.request(request);
+        assert!(resp.contains(r#""code":"no-match""#), "{resp}");
+        assert!(!resp.contains("adm-pw"), "{resp}");
+        assert!(!resp.contains("wik-pw"), "{resp}");
+    }
+    host.finish();
+}
+
+/// An entry with no realm is a wildcard over its host — which is what every
+/// entry written before the field existed is, so an old vault keeps answering
+/// whatever realm a site challenges for.
+#[cfg(unix)]
+#[test]
+fn an_unrealmed_entry_answers_any_realm() {
+    let fixture = Fixture::new(10);
+    let mut host = Host::spawn_with_pinentry(&fixture);
+    assert!(host
+        .request(r#"{"id":1,"type":"unlock"}"#)
+        .contains(r#""locked":false"#));
+
+    for request in [
+        r#"{"id":2,"type":"get-logins-strict","origin":"https://example.com","realm":"Anything"}"#,
+        r#"{"id":3,"type":"get-logins-strict","origin":"https://example.com"}"#,
+    ] {
+        let resp = host.request(request);
+        assert!(resp.contains(r#""name":"example.com""#), "{resp}");
+    }
+    host.finish();
+}
+
+/// The realm is HTTP-authentication metadata; a login form belongs to no
+/// protection space, so the gesture-driven path ignores it rather than hiding
+/// entries the user clicked to fill.
+#[cfg(unix)]
+#[test]
+fn the_gesture_driven_match_ignores_the_realm() {
+    let fixture = Fixture::new(10);
+    let mut host = Host::spawn_with_pinentry(&fixture);
+    assert!(host
+        .request(r#"{"id":1,"type":"unlock"}"#)
+        .contains(r#""locked":false"#));
+    let resp = host.request(
+        r#"{"id":2,"type":"get-logins","origin":"https://multi.example","realm":"Other"}"#,
+    );
+    assert!(resp.contains(r#""name":"multi-admin""#), "{resp}");
+    assert!(resp.contains(r#""name":"multi-wiki""#), "{resp}");
+    host.finish();
 }

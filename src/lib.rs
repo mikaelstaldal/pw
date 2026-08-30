@@ -105,6 +105,20 @@ pub struct PasswordEntry {
     /// format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Optional HTTP-authentication realm the entry is for, narrowing `url` to
+    /// a single protection space. A site can run several realms — each with
+    /// its own username — under one host, which the host part alone cannot
+    /// tell apart; naming the realm here makes the match unambiguous.
+    ///
+    /// Only the browser integration's HTTP-authentication path consults it; a
+    /// form fill ignores it, since a login form belongs to no protection
+    /// space. An entry with no realm is a wildcard, matching any realm on its
+    /// `url` host — which is what every entry written before this field
+    /// existed is. Meaningless without a `url`, and rejected without one.
+    /// Not serialized when absent, so realm-less entries stay byte-identical
+    /// to the pre-`realm` format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realm: Option<String>,
 }
 
 /// Create a new empty vault. Fails if the file already exists.
@@ -170,8 +184,8 @@ pub fn update(
     store(file, passphrase, &entries, params)
 }
 
-/// Replace the username and `url` of an existing entry while keeping its
-/// current password, so the user can re-point an entry at another site (or
+/// Replace the username, `url` and `realm` of an existing entry while keeping
+/// its current password, so the user can re-point an entry at another site (or
 /// relabel it) without rotating the secret. Fails if no entry is named `name`.
 pub fn update_keep_password(
     file: &Path,
@@ -179,13 +193,12 @@ pub fn update_keep_password(
     name: &str,
     username: String,
     url: Option<String>,
+    realm: Option<String>,
     params: &Params,
 ) -> Result<(), PwError> {
     validate_name(name)?;
     validate_username(&username)?;
-    if let Some(url) = &url {
-        validate_url(url)?;
-    }
+    validate_site(url.as_deref(), realm.as_deref())?;
     let mut entries = load(file, passphrase)?;
     let Some(entry) = entries.iter_mut().find(|e| e.name == name) else {
         return Err(PwError::NotFound {
@@ -195,6 +208,7 @@ pub fn update_keep_password(
     };
     entry.username = username;
     entry.url = url;
+    entry.realm = realm;
     store(file, passphrase, &entries, params)
 }
 
@@ -304,14 +318,43 @@ pub fn validate_url(url: &str) -> Result<(), PwError> {
     validate_text("url", url)
 }
 
+/// The optional `realm` matching hint, when present, must be non-empty and
+/// obey the same length and character rules as entry names. Callers map "no
+/// realm" to `None`, so an empty string is rejected rather than stored.
+pub fn validate_realm(realm: &str) -> Result<(), PwError> {
+    if realm.is_empty() {
+        return Err(PwError::InvalidInput {
+            what: "realm",
+            reason: "must not be empty".to_string(),
+        });
+    }
+    validate_text("realm", realm)
+}
+
+/// Validate the pair of site-matching hints. A `realm` names one protection
+/// space *on a host*, so it can only narrow a `url`; on its own it would
+/// silently never match anything, which is worth refusing rather than storing.
+fn validate_site(url: Option<&str>, realm: Option<&str>) -> Result<(), PwError> {
+    if let Some(url) = url {
+        validate_url(url)?;
+    }
+    if let Some(realm) = realm {
+        validate_realm(realm)?;
+        if url.is_none() {
+            return Err(PwError::InvalidInput {
+                what: "realm",
+                reason: "needs a url: a realm names a protection space on a site".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Validate the user-supplied fields of an entry before it is stored.
 fn validate_entry(entry: &PasswordEntry) -> Result<(), PwError> {
     validate_name(&entry.name)?;
     validate_username(&entry.username)?;
-    if let Some(url) = &entry.url {
-        validate_url(url)?;
-    }
-    Ok(())
+    validate_site(entry.url.as_deref(), entry.realm.as_deref())
 }
 
 fn validate_text(what: &'static str, value: &str) -> Result<(), PwError> {
@@ -397,8 +440,9 @@ pub fn matching_entries<'a>(
         .collect()
 }
 
-/// Entries whose `url` host is *exactly* `hostname`, with no parent-domain
-/// match.
+/// Entries releasable to the HTTP-authentication protection space
+/// (`hostname`, `realm`): those whose `url` host is *exactly* `hostname`, with
+/// no parent-domain match, narrowed by `realm`.
 ///
 /// [`matching_entries`] deliberately accepts a parent domain, which is right
 /// for a fill the user asks for on the page in front of them. It is wrong for a
@@ -408,14 +452,31 @@ pub fn matching_entries<'a>(
 /// parent domain's password silently, with no dialog to notice. Exact matching
 /// is also how HTTP authentication scopes credentials in the first place: a
 /// protection space is a single origin, never a domain tree.
+///
+/// The realm completes that protection space. Among the entries on the host:
+///
+/// - if any names this exact realm, only those are released — the site said
+///   which space it is challenging for, and the vault says which entry belongs
+///   to it, so there is nothing to guess at;
+/// - otherwise the entries naming *no* realm are released, since an untagged
+///   entry is a wildcard over its host. Every entry written before the field
+///   existed is untagged, so an unrealmed vault behaves exactly as before;
+/// - entries naming a *different* realm are never released, whether or not
+///   anything else matched. Being told the credential is for another space is
+///   reason enough not to send it to this one.
+///
+/// Realms are compared as exact strings, as the protocol defines them: an
+/// opaque quoted string, not a case-insensitive token or a domain. A challenge
+/// carrying no realm (`None`) therefore matches only untagged entries.
 pub fn exactly_matching_entries<'a>(
     hostname: &str,
+    realm: Option<&str>,
     entries: &'a [PasswordEntry],
 ) -> Vec<&'a PasswordEntry> {
     let Some(host) = normalize_host(hostname) else {
         return Vec::new();
     };
-    entries
+    let on_host: Vec<&PasswordEntry> = entries
         .iter()
         .filter(|e| {
             e.url
@@ -423,7 +484,19 @@ pub fn exactly_matching_entries<'a>(
                 .and_then(url_host)
                 .is_some_and(|c| c == host)
         })
-        .collect()
+        .collect();
+    let named: Vec<&PasswordEntry> = match realm {
+        Some(realm) => on_host
+            .iter()
+            .copied()
+            .filter(|e| e.realm.as_deref() == Some(realm))
+            .collect(),
+        None => Vec::new(),
+    };
+    if !named.is_empty() {
+        return named;
+    }
+    on_host.into_iter().filter(|e| e.realm.is_none()).collect()
 }
 
 /// IDNA/punycode-normalize a hostname to lowercase ASCII, or `None` if it is
@@ -509,6 +582,7 @@ mod tests {
             username: format!("{name}-user"),
             password: password.into(),
             url: None,
+            realm: None,
         }
     }
 
@@ -649,6 +723,7 @@ mod tests {
             username: "user\r\n".to_string(),
             password: "pw".into(),
             url: None,
+            realm: None,
         };
         let err = add(&file, &passphrase(), bad, &TEST_PARAMS).unwrap_err();
         assert!(matches!(err, PwError::InvalidInput { .. }));
@@ -684,6 +759,7 @@ mod tests {
             username: String::new(),
             password: "pw".into(),
             url: None,
+            realm: None,
         };
         add(&file, &passphrase(), e, &TEST_PARAMS).unwrap();
         assert_eq!(get(&file, &passphrase(), "a").unwrap().username, "");
@@ -737,6 +813,7 @@ mod tests {
             username: "user".to_string(),
             password: "pw".into(),
             url: Some(url.to_string()),
+            realm: None,
         }
     }
 
@@ -762,9 +839,28 @@ mod tests {
             .enumerate()
             .map(|(i, u)| with_url(&format!("entry-{i}"), u))
             .collect();
-        exactly_matching_entries(hostname, &entries)
+        exactly_matching_entries(hostname, None, &entries)
             .into_iter()
             .filter_map(|e| e.url.clone())
+            .collect()
+    }
+
+    fn with_realm(name: &str, url: &str, realm: Option<&str>) -> PasswordEntry {
+        let mut entry = with_url(name, url);
+        entry.realm = realm.map(str::to_string);
+        entry
+    }
+
+    /// Run the protection-space match for `hostname`/`realm` and return the
+    /// names of the entries released, in order.
+    fn realm_matches(
+        hostname: &str,
+        realm: Option<&str>,
+        entries: &[PasswordEntry],
+    ) -> Vec<String> {
+        exactly_matching_entries(hostname, realm, entries)
+            .into_iter()
+            .map(|e| e.name.clone())
             .collect()
     }
 
@@ -893,6 +989,7 @@ mod tests {
             username: "user".to_string(),
             password: "pw".into(),
             url: None,
+            realm: None,
         }];
         assert!(matching_entries("github.com", &entries).is_empty());
     }
@@ -949,6 +1046,142 @@ mod tests {
     }
 
     #[test]
+    fn realm_selects_the_entry_naming_it() {
+        let entries = vec![
+            with_realm("admin", "example.com", Some("Admin")),
+            with_realm("wiki", "example.com", Some("Wiki")),
+        ];
+        assert_eq!(
+            realm_matches("example.com", Some("Admin"), &entries),
+            ["admin"]
+        );
+        assert_eq!(
+            realm_matches("example.com", Some("Wiki"), &entries),
+            ["wiki"]
+        );
+    }
+
+    #[test]
+    fn a_realmed_entry_is_never_released_to_another_realm() {
+        // Not even when nothing else matches: being told the credential
+        // belongs to another protection space is reason enough to withhold it.
+        let entries = vec![with_realm("admin", "example.com", Some("Admin"))];
+        assert!(realm_matches("example.com", Some("Wiki"), &entries).is_empty());
+        assert!(realm_matches("example.com", None, &entries).is_empty());
+    }
+
+    #[test]
+    fn an_unrealmed_entry_is_a_wildcard_over_its_host() {
+        // Every entry written before the field existed is untagged, so an old
+        // vault must keep matching whatever realm the site challenges for.
+        let entries = vec![with_realm("site", "example.com", None)];
+        for realm in [Some("Admin"), Some("Wiki"), None] {
+            assert_eq!(realm_matches("example.com", realm, &entries), ["site"]);
+        }
+    }
+
+    #[test]
+    fn a_named_realm_wins_over_the_wildcard() {
+        // Both would do, but the specific one is what the site asked for, and
+        // releasing only it is what turns two matches into no chooser at all.
+        let entries = vec![
+            with_realm("catch-all", "example.com", None),
+            with_realm("admin", "example.com", Some("Admin")),
+        ];
+        assert_eq!(
+            realm_matches("example.com", Some("Admin"), &entries),
+            ["admin"]
+        );
+        // A realm no entry names falls back to the wildcard.
+        assert_eq!(
+            realm_matches("example.com", Some("Other"), &entries),
+            ["catch-all"]
+        );
+    }
+
+    #[test]
+    fn realms_are_compared_as_exact_strings() {
+        // The protocol makes a realm an opaque quoted string, not a
+        // case-insensitive token.
+        let entries = vec![with_realm("admin", "example.com", Some("Admin"))];
+        assert!(realm_matches("example.com", Some("admin"), &entries).is_empty());
+        assert!(realm_matches("example.com", Some("Admin "), &entries).is_empty());
+    }
+
+    #[test]
+    fn realm_does_not_loosen_host_matching() {
+        let entries = vec![with_realm("admin", "example.com", Some("Admin"))];
+        assert!(realm_matches("evil.example.com", Some("Admin"), &entries).is_empty());
+    }
+
+    #[test]
+    fn realm_is_ignored_by_the_gesture_driven_match() {
+        // A login form belongs to no protection space, so a realm must not
+        // keep an entry out of a fill the user clicked for.
+        let entries = vec![with_realm("admin", "example.com", Some("Admin"))];
+        assert_eq!(matching_entries("www.example.com", &entries).len(), 1);
+    }
+
+    #[test]
+    fn realm_round_trips_and_is_omitted_when_absent() {
+        let (_dir, file) = new_vault(&[]);
+        add(
+            &file,
+            &passphrase(),
+            with_realm("plain", "example.com", None),
+            &TEST_PARAMS,
+        )
+        .unwrap();
+        add(
+            &file,
+            &passphrase(),
+            with_realm("admin", "example.com", Some("Admin")),
+            &TEST_PARAMS,
+        )
+        .unwrap();
+        let json = export(&file, &passphrase()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // A realm-less entry carries no "realm" key, so it stays
+        // byte-identical to the pre-`realm` on-disk format.
+        assert!(value["entries"][0].get("realm").is_none());
+        assert_eq!(value["entries"][1]["realm"], "Admin");
+        assert_eq!(
+            get(&file, &passphrase(), "admin").unwrap().realm.as_deref(),
+            Some("Admin")
+        );
+    }
+
+    #[test]
+    fn rejects_a_realm_without_a_url() {
+        // A realm names a protection space on a host; with no host it could
+        // only ever match nothing, so it is refused rather than stored.
+        let (_dir, file) = new_vault(&[]);
+        let bad = PasswordEntry {
+            name: "a".to_string(),
+            username: String::new(),
+            password: "pw".into(),
+            url: None,
+            realm: Some("Admin".to_string()),
+        };
+        let err = add(&file, &passphrase(), bad, &TEST_PARAMS).unwrap_err();
+        assert!(matches!(err, PwError::InvalidInput { what: "realm", .. }));
+    }
+
+    #[test]
+    fn rejects_invalid_realm() {
+        let (_dir, file) = new_vault(&[]);
+        let bad = PasswordEntry {
+            name: "a".to_string(),
+            username: String::new(),
+            password: "pw".into(),
+            url: Some("example.com".to_string()),
+            realm: Some("with\nnewline".to_string()),
+        };
+        let err = add(&file, &passphrase(), bad, &TEST_PARAMS).unwrap_err();
+        assert!(matches!(err, PwError::InvalidInput { what: "realm", .. }));
+    }
+
+    #[test]
     fn rejects_invalid_url() {
         let (_dir, file) = new_vault(&[]);
         let bad = PasswordEntry {
@@ -956,6 +1189,7 @@ mod tests {
             username: String::new(),
             password: "pw".into(),
             url: Some("with\nnewline".to_string()),
+            realm: None,
         };
         let err = add(&file, &passphrase(), bad, &TEST_PARAMS).unwrap_err();
         assert!(matches!(err, PwError::InvalidInput { what: "url", .. }));
@@ -970,22 +1204,31 @@ mod tests {
             "a",
             "new-user".to_string(),
             Some("github.com".to_string()),
+            Some("Admin".to_string()),
             &TEST_PARAMS,
         )
         .unwrap();
         let e = get(&file, &passphrase(), "a").unwrap();
-        // The password is untouched; the username and url are replaced.
+        // The password is untouched; the username, url and realm are replaced.
         assert_eq!(e.password, "pw-a".into());
         assert_eq!(e.username, "new-user");
         assert_eq!(e.url.as_deref(), Some("github.com"));
+        assert_eq!(e.realm.as_deref(), Some("Admin"));
     }
 
     #[test]
     fn update_keep_password_unknown_name() {
         let (_dir, file) = new_vault(&[]);
-        let err =
-            update_keep_password(&file, &passphrase(), "a", String::new(), None, &TEST_PARAMS)
-                .unwrap_err();
+        let err = update_keep_password(
+            &file,
+            &passphrase(),
+            "a",
+            String::new(),
+            None,
+            None,
+            &TEST_PARAMS,
+        )
+        .unwrap_err();
         assert!(matches!(err, PwError::NotFound { .. }));
     }
 

@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.6.0 (2026-08-30)
+
+- Password entries can name an **HTTP authentication realm**, so a host running
+  several protection spaces matches unambiguously instead of falling to the
+  chooser: `pw add nas-admin root --url nas.example --realm "Admin Area"`. New
+  optional `--realm` on `add` and `update` (it requires `--url`, and omitting it
+  on `update` clears it, like the username), shown by `get` and `show`.
+
+  Among the entries on a host, one naming the challenged realm wins outright;
+  failing that, the entries naming *no* realm are used, since an untagged entry
+  is a wildcard over its host — which every entry written before this is, so an
+  existing vault behaves exactly as it did. An entry naming a *different* realm
+  is never released, even when nothing else matched. Realms are compared as
+  exact strings, as the protocol defines them. A form fill ignores the realm
+  entirely: a login form belongs to no protection space.
+
+  `pw::exactly_matching_entries` takes the challenged realm as a new second
+  argument; `pw::update_keep_password` takes the realm alongside the url. The
+  `realm` field is not serialized when absent, so a vault without one stays
+  byte-identical to the pre-`realm` format, and the browser host's
+  `get-logins-strict`/`get-logins-strict-unlock` requests carry an optional
+  `realm`. New `pw::validate_realm`.
+
+- Firefox add-on: an **HTTP-authentication challenge that finds the vault
+  locked** is now held open while the toolbar popup offers to unlock, instead
+  of falling straight through to Firefox's own dialog — so the vault no longer
+  has to be unlocked *before* navigating to the site. It is part of
+  HTTP-authentication filling, which remains off until you grant its optional
+  permissions; there is no separate switch.
+
+  The rule the host enforces is unchanged: a page load cannot summon a
+  `pinentry` dialog. What a page can summon is the popup, which releases
+  nothing; `pinentry` appears only on the click of *Unlock and sign in*. Since
+  pw cannot tell whether it has an entry for a site until the vault is open,
+  the offer necessarily comes before that is known, so a host whose offer goes
+  unanswered is not asked about again for five minutes.
+
+- New `get-logins-strict-unlock` request on `pw-browser-host`, sent only from
+  that click: the exact-host matching of `get-logins-strict`, but permitted to
+  unlock via `pinentry`. Unlocking and matching are one request so that no
+  relock can slip between them — with `cache_minutes: 0` one always would,
+  since the host drops its entries as soon as it has answered. A host too old
+  to know the request type answers `error/internal`, which the extension
+  declines; it never falls back to a looser rule.
+
+- The add-on's permissions are unchanged, and it still stores nothing: the
+  five-minute offer throttle lives in the background script's memory only.
+
+- No change to the vault file format: the new `realm` field is optional and
+  omitted when unset, so a vault holding no realms is byte-identical to one
+  written by 0.5.0. An older `pw` reading a vault that does hold realms ignores
+  the field — and drops it if it writes the vault back.
+
 ## 0.5.0 (2026-08-29)
 
 - Firefox add-on: an **HTTP-authentication challenge with several matching

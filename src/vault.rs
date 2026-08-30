@@ -221,6 +221,7 @@ mod tests {
             username: format!("{name}-user"),
             password: password.into(),
             url: None,
+            realm: None,
         }
     }
 

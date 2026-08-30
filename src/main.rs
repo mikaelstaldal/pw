@@ -91,6 +91,9 @@ enum Commands {
         /// be used by the browser integration, which matches on url only
         #[arg(long)]
         url: Option<String>,
+        /// HTTP authentication realm on that site, if it runs more than one
+        #[arg(long, requires = "url")]
+        realm: Option<String>,
         #[command(flatten)]
         password: PasswordOptions,
         /// Print the new password to stdout instead of copying it
@@ -107,7 +110,10 @@ enum Commands {
         /// Site this entry is for; omit to clear it (like the username)
         #[arg(long)]
         url: Option<String>,
-        /// Keep the existing password, only changing the username and url
+        /// HTTP authentication realm on that site; omit to clear it
+        #[arg(long, requires = "url")]
+        realm: Option<String>,
+        /// Keep the existing password, only changing the username, url and realm
         #[arg(long, conflicts_with = "input_password")]
         keep_password: bool,
         #[command(flatten)]
@@ -371,10 +377,14 @@ fn run() -> anyhow::Result<ExitCode> {
             if !entry.username.is_empty() {
                 println!("{}", sanitize(&entry.username));
             }
-            // The url is informational; print it to stderr so the stdout
-            // contract (username, then password under --show) is unchanged.
+            // The url and realm are informational; print them to stderr so the
+            // stdout contract (username, then password under --show) is
+            // unchanged.
             if let Some(url) = &entry.url {
                 eprintln!("url: {}", sanitize(url));
+            }
+            if let Some(realm) = &entry.realm {
+                eprintln!("realm: {}", sanitize(realm));
             }
             if show {
                 println!("{}", entry.password.expose());
@@ -402,6 +412,7 @@ fn run() -> anyhow::Result<ExitCode> {
             name,
             username,
             url,
+            realm,
             password,
             show,
         } => {
@@ -416,7 +427,8 @@ fn run() -> anyhow::Result<ExitCode> {
                 name: name.clone(),
                 username: username.unwrap_or_default(),
                 password,
-                url: normalize_url(url),
+                url: normalize_hint(url),
+                realm: normalize_hint(realm),
             };
             pw::add(&file, &passphrase, entry, &params)?;
             if !show {
@@ -430,6 +442,7 @@ fn run() -> anyhow::Result<ExitCode> {
             name,
             username,
             url,
+            realm,
             keep_password,
             password,
             show,
@@ -441,7 +454,8 @@ fn run() -> anyhow::Result<ExitCode> {
                     &passphrase,
                     &name,
                     username.unwrap_or_default(),
-                    normalize_url(url),
+                    normalize_hint(url),
+                    normalize_hint(realm),
                     &params,
                 )?;
                 println!("Updated entry '{}' (password unchanged).", sanitize(&name));
@@ -457,7 +471,8 @@ fn run() -> anyhow::Result<ExitCode> {
                     name: name.clone(),
                     username: username.unwrap_or_default(),
                     password,
-                    url: normalize_url(url),
+                    url: normalize_hint(url),
+                    realm: normalize_hint(realm),
                 };
                 pw::update(&file, &passphrase, entry, &params)?;
                 if !show {
@@ -499,6 +514,9 @@ fn run() -> anyhow::Result<ExitCode> {
             }
             if let Some(url) = &entry.url {
                 println!("url: {}", sanitize(url));
+            }
+            if let Some(realm) = &entry.realm {
+                println!("realm: {}", sanitize(realm));
             }
         }
         Commands::Export {} => {
@@ -659,10 +677,11 @@ fn confirm(prompt: &str) -> anyhow::Result<bool> {
     Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
 }
 
-/// Treat an absent or empty `--url` as "no url", so an entry without one stays
-/// byte-identical to the pre-`url` format rather than carrying an empty string.
-fn normalize_url(url: Option<String>) -> Option<String> {
-    url.filter(|u| !u.is_empty())
+/// Treat an absent or empty `--url`/`--realm` as "not set", so an entry
+/// without one stays byte-identical to the format before that field existed
+/// rather than carrying an empty string.
+fn normalize_hint(value: Option<String>) -> Option<String> {
+    value.filter(|v| !v.is_empty())
 }
 
 /// Replace control, bidirectional and zero-width characters before echoing

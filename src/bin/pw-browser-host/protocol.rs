@@ -55,6 +55,11 @@ pub struct Request {
     #[serde(rename = "type")]
     pub typ: Option<String>,
     pub origin: Option<String>,
+    /// The HTTP-authentication realm the challenge named, on the requests that
+    /// answer one. Absent (or `null`) means the challenge carried no realm, or
+    /// that this is not an HTTP-authentication request at all; either way only
+    /// entries that name no realm are eligible.
+    pub realm: Option<String>,
 }
 
 /// A single released login on the wire. Deliberately only `name`, `username`

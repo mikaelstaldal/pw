@@ -80,6 +80,30 @@ enum Strictness {
     /// prompt. For the browser's HTTP-authentication path, which answers a
     /// challenge with no user gesture behind it.
     Strict,
+    /// `get-logins-strict-unlock`: exact matching like [`Strictness::Strict`],
+    /// but may unlock via pinentry. The extension sends it only from the click
+    /// on its own unlock button, when a challenge is being held open for that
+    /// answer — so the prompt is the user's doing, even though the challenge
+    /// that occasioned it was not. Matching and unlocking are one request so
+    /// that no relock can slip between them (with `cache_minutes: 0` one
+    /// always would).
+    StrictUnlock,
+}
+
+impl Strictness {
+    /// Whether the visited host must equal the entry's `url` host exactly.
+    fn exact(self) -> bool {
+        self != Strictness::Normal
+    }
+
+    /// For the debug log.
+    fn label(self) -> &'static str {
+        match self {
+            Strictness::Normal => "normal",
+            Strictness::Strict => "strict",
+            Strictness::StrictUnlock => "strict-unlock",
+        }
+    }
 }
 
 /// Why an unlock could not produce decrypted entries; each maps to a protocol
@@ -124,11 +148,10 @@ impl Host {
             ));
         }
         match request.typ.as_deref() {
-            Some("get-logins") => {
-                self.get_logins(id, request.origin.as_deref(), Strictness::Normal)
-            }
-            Some("get-logins-strict") => {
-                self.get_logins(id, request.origin.as_deref(), Strictness::Strict)
+            Some("get-logins") => self.get_logins(id, &request, Strictness::Normal),
+            Some("get-logins-strict") => self.get_logins(id, &request, Strictness::Strict),
+            Some("get-logins-strict-unlock") => {
+                self.get_logins(id, &request, Strictness::StrictUnlock)
             }
             Some("unlock") => self.unlock(id),
             Some("lock") => {
@@ -150,8 +173,8 @@ impl Host {
         }
     }
 
-    fn get_logins(&mut self, id: u64, origin: Option<&str>, strictness: Strictness) -> Vec<u8> {
-        let Some(origin) = origin else {
+    fn get_logins(&mut self, id: u64, request: &Request, strictness: Strictness) -> Vec<u8> {
+        let Some(origin) = request.origin.as_deref() else {
             return error(id, "invalid-origin", "request has no origin");
         };
         // The hostname drives `url` matching. It comes from the tab's
@@ -161,15 +184,17 @@ impl Host {
         };
 
         debug_log::log(&format!(
-            "get-logins eligible hostname={hostname} strict={} unlocked={}",
-            strictness == Strictness::Strict,
+            "get-logins eligible hostname={hostname} matching={} realm={:?} unlocked={}",
+            strictness.label(),
+            request.realm.as_deref().unwrap_or("(none)"),
             self.is_unlocked()
         ));
         // A strict request must never prompt: the browser sends it without a
         // user gesture, so a passphrase dialog here would be one a visited
         // page caused. Declining is not a race — nothing between this check
         // and the matching below can unlock the vault, because a host handles
-        // one request at a time.
+        // one request at a time. `StrictUnlock` is the deliberate exception:
+        // it is sent only after the user has clicked to unlock.
         if strictness == Strictness::Strict && !self.is_unlocked() {
             return error(id, "locked", "vault is locked");
         }
@@ -179,9 +204,13 @@ impl Host {
         }
 
         let entries = &self.cache.as_ref().expect("unlocked").entries;
-        let matched = match strictness {
-            Strictness::Normal => pw::matching_entries(&hostname, entries),
-            Strictness::Strict => pw::exactly_matching_entries(&hostname, entries),
+        // The realm narrows the exact match to one protection space. It is
+        // ignored on the gesture-driven path: a login form belongs to no
+        // protection space, so a realm there would only hide entries.
+        let matched = if strictness.exact() {
+            pw::exactly_matching_entries(&hostname, request.realm.as_deref(), entries)
+        } else {
+            pw::matching_entries(&hostname, entries)
         };
         debug_log::log(&format!(
             "unlocked: {} entries, {} match {hostname}",

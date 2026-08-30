@@ -75,6 +75,46 @@ async function chooseAuth(name) {
   setTimeout(() => window.close(), 900);
 }
 
+// One action button in the same list the chooser uses.
+function renderAction(label, onClick) {
+  const li = document.createElement("li");
+  const button = document.createElement("button");
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = label;
+  button.appendChild(name);
+  button.addEventListener("click", onClick);
+  li.appendChild(button);
+  listEl.appendChild(li);
+}
+
+// The vault is locked and an HTTP-authentication challenge is being held open
+// for it. Unlocking here is a click, which is what makes the passphrase prompt
+// the user's own doing rather than the page's.
+//
+// The reply usually never arrives: pinentry takes focus and this popup is
+// destroyed. The background script finishes the job either way — it fills the
+// challenge, or reopens this popup with the chooser — so anything rendered
+// below is a bonus for the case where the popup outlives the prompt.
+async function unlockForAuth() {
+  showStatus("Enter your passphrase in the pinentry window…");
+  clearList();
+  const result = await send("unlock-auth");
+  if (!result || result.error) {
+    showStatus(result ? result.error : "No response.", true);
+    return;
+  }
+  if (result.authChoices && result.authChoices.length) {
+    showStatus(describeChallenge(result) + " is asking for a login:");
+    renderChoices(result.authChoices, chooseAuth);
+    return;
+  }
+  showStatus(
+    result.username ? "Signing in as " + result.username + "…" : "Signing in…"
+  );
+  setTimeout(() => window.close(), 900);
+}
+
 function renderChoices(choices, onPick) {
   for (const choice of choices) {
     const li = document.createElement("li");
@@ -182,6 +222,19 @@ async function init() {
   if (result.authChoices && result.authChoices.length) {
     showStatus(describeChallenge(result) + " is asking for a login:");
     renderChoices(result.authChoices, chooseAuth);
+    return;
+  }
+  if (result.authLocked) {
+    // A second popup opened over a pinentry dialog that is already up must not
+    // start another unlock.
+    if (result.unlocking) {
+      showStatus("Enter your passphrase in the pinentry window…");
+      return;
+    }
+    showStatus(
+      describeChallenge(result) + " is asking for a login, and pw is locked."
+    );
+    renderAction("Unlock and sign in", unlockForAuth);
     return;
   }
   if (result.choices && result.choices.length) {

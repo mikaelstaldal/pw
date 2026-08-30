@@ -54,16 +54,16 @@ On a login page, click the toolbar button or press `Ctrl+Alt+L` (remappable in
 The popup also has an **Unlock** button (it becomes **Lock** once the vault is
 open). Unlocking there prompts for the master passphrase in `pinentry` without
 filling anything and without releasing any entry, so the first fill of the
-session does not have to be the thing that opens the vault. It is also the way
-to make HTTP-authentication filling usable, since that path never prompts by
-itself. Lock discards the host's decrypted copy immediately.
+session does not have to be the thing that opens the vault. Lock discards the
+host's decrypted copy immediately.
 
 The host fills an entry only on a site that matches the entry's `url` — set only
 from the CLI (never from the browser), which is what keeps the host read-only.
 Only entries with a `url` are eligible; set the site with
 `pw add <name> --url …` / `pw update <name> --url …` (the entry `name` is never
-matched against the site). Fills then happen with no prompt until the host's
-cache expires (`cache_minutes`, default 10).
+matched against the site). `--realm …` narrows an entry to one HTTP
+authentication realm on that site; see below. Fills then happen with no prompt
+until the host's cache expires (`cache_minutes`, default 10).
 
 ## HTTP authentication (off by default)
 
@@ -90,20 +90,53 @@ the normal dialog appears, exactly as it does today:
   `evil.example.com`, which a form fill would fill if you clicked to. Nothing
   here is a click, so a subdomain someone else controls must not be able to
   collect the parent domain's password silently;
-- the vault is already unlocked. The request used here, `get-logins-strict`,
-  is answered with `locked` rather than a passphrase prompt, so a page load
-  cannot summon a `pinentry` dialog. Use the popup's **Unlock** button before
-  you need it, or fill a form somewhere first;
-- at least one entry matches the site. If several do — separate realms under
-  one domain, each with its own username — the popup opens and asks which one,
-  naming the challenging host and realm; the page load waits, and nothing is
-  released until you pick. Closing the popup, or leaving it for a minute, gives
-  the challenge back to the dialog. Only the active tab is asked about, since
-  that is the tab the popup belongs to; a challenge in a background tab gets
-  the dialog.
+- the entry's `realm`, if it has one, is the realm being challenged for. Set it
+  with `pw add <name> --url … --realm …` when a host runs more than one
+  protection space. An entry naming the challenged realm wins outright; failing
+  that, entries naming no realm are used (an untagged entry is a wildcard over
+  its host, which every entry written before the field existed is); an entry
+  naming a different realm is never released. Realms are compared as exact
+  strings. A form fill ignores the realm — a login form belongs to no
+  protection space;
+- the vault is unlocked, or you take up the offer to unlock described below.
+  The request used here, `get-logins-strict`, is answered with `locked` rather
+  than a passphrase prompt, so a page load cannot summon a `pinentry` dialog by
+  itself;
+- at least one entry matches. If several still do after the realm has been
+  applied — two untagged entries on one host, say — the popup opens and asks
+  which one, naming the challenging host and realm; the page load waits, and
+  nothing is released until you pick. Closing the popup, or leaving it for a
+  minute, gives the challenge back to the dialog. Only the active tab is asked
+  about, since that is the tab the popup belongs to; a challenge in a
+  background tab gets the dialog.
 
 Credentials that the server rejects are not retried: the second challenge for
 the same request falls through to the dialog, chooser or not.
+
+### Offering to unlock from a challenge
+
+Unlocking *before* navigating would be the awkward part of the above, so a
+challenge that finds the vault locked is held while the popup offers to unlock,
+instead of being handed straight to Firefox's dialog. Clicking *Unlock and sign
+in* raises `pinentry`; the challenge waits, and is answered when it returns (or
+falls through to the dialog if you cancel, or leave the prompt standing for
+three minutes).
+
+The rule the host enforces is unchanged: a page load cannot summon a `pinentry`
+dialog. What a page can summon is the popup, which releases nothing. The click
+sends `get-logins-strict-unlock` — the same exact-host matching, but permitted
+to prompt — which does the unlocking and the matching in a single request, so
+nothing can relock in between (with `cache_minutes: 0` something always would).
+If several entries then match, the realm chooser follows in a newly opened
+popup, since `pinentry` taking focus closes the one that started it. The
+popup's own **Unlock** button takes the same path while a challenge is waiting,
+rather than unlocking a vault the challenge has already given up on.
+
+Because pw cannot tell whether it has an entry for a site until the vault is
+open, the offer has to come before that is known: any `https:` site returning
+`401` can put it up. A host whose offer goes unanswered is left alone for five
+minutes; that memory is in the background script only and is never written to
+disk.
 
 When pw does answer, the toolbar button shows a green ✓ for three seconds once
 the page has loaded — the only sign that it happened, since no dialog appears.
@@ -135,6 +168,5 @@ passphrase or stalled.
 - No form detection/highlighting, no save-on-submit, no password generation.
 - Fields in closed shadow DOM are not reachable.
 - HTTP authentication is answered only on a top-level load in the active tab
-  with the vault unlocked (see above). Entries are matched by host only, never
-  by realm; when several match, the realm is shown in the chooser rather than
-  used to select for you.
+  (see above). The realm is matched only against one an entry names itself;
+  there is no way to have the browser record it for you when you sign in.

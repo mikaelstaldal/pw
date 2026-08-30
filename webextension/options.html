@@ -98,9 +98,14 @@
       <ul class="muted">
         <li>it is a page you navigated to — never an image, script or frame;</li>
         <li>the site is <code>https:</code> (or loopback), never a proxy;</li>
-        <li>the vault is already unlocked — it never prompts for your master
-          passphrase by itself;</li>
-        <li>exactly one entry matches the site.</li>
+        <li>the vault is unlocked, or you take up the offer to unlock: a
+          locked vault holds the page load and the toolbar popup asks, so a
+          page can put the offer up but only your click raises the passphrase
+          prompt. Until the vault is open pw cannot tell whether it even has a
+          login for the site, so that offer comes from any site that asks; one
+          you dismiss is not asked about again for five minutes;</li>
+        <li>at least one entry matches the site and the realm it challenges
+          for.</li>
       </ul>
       <p class="muted">
         In every other case the browser's own dialog appears, as it does today.

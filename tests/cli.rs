@@ -307,6 +307,84 @@ fn url_is_stored_and_shown() {
 }
 
 #[test]
+fn realm_is_stored_and_shown() {
+    let dir = TempDir::new().unwrap();
+    let vault = init_vault(&dir);
+    pw(&vault)
+        .args([
+            "add",
+            "example-admin",
+            "alice",
+            "--url",
+            "example.com",
+            "--realm",
+            "Admin Area",
+            "--show",
+        ])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success();
+    pw(&vault)
+        .arg("export")
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success()
+        .stdout(contains(r#""realm":"Admin Area""#));
+    pw(&vault)
+        .args(["show", "example-admin"])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success()
+        .stdout(contains("url: example.com").and(contains("realm: Admin Area")));
+}
+
+/// A realm names one protection space *on a host*, so on its own it could only
+/// ever match nothing. Refused at the command line rather than stored.
+#[test]
+fn realm_without_url_is_rejected() {
+    let dir = TempDir::new().unwrap();
+    let vault = init_vault(&dir);
+    pw(&vault)
+        .args(["add", "site", "u", "--realm", "Admin", "--show"])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .failure();
+}
+
+#[test]
+fn update_without_realm_clears_it() {
+    let dir = TempDir::new().unwrap();
+    let vault = init_vault(&dir);
+    pw(&vault)
+        .args([
+            "add",
+            "site",
+            "u",
+            "--url",
+            "example.com",
+            "--realm",
+            "Admin",
+            "--show",
+        ])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success();
+    // Keeping the url but omitting --realm clears the realm alone, turning a
+    // realm-scoped entry back into a wildcard over its host.
+    pw(&vault)
+        .args(["update", "site", "u", "--url", "example.com", "--show"])
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success();
+    pw(&vault)
+        .arg("export")
+        .write_stdin(PASSPHRASE)
+        .assert()
+        .success()
+        .stdout(contains(r#""url":"example.com""#).and(contains(r#""realm":"#).not()));
+}
+
+#[test]
 fn update_without_url_clears_it() {
     let dir = TempDir::new().unwrap();
     let vault = init_vault(&dir);
