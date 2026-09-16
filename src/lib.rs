@@ -535,7 +535,8 @@ fn host_matches(host: &str, name: &str, min_labels: usize) -> bool {
 }
 
 /// Generate a random password of `length` characters from `charset`,
-/// using a cryptographically secure generator.
+/// using a cryptographically secure generator. Charset characters are Unicode
+/// scalar values, and each value must occur exactly once.
 pub fn generate_password(length: u32, charset: &str) -> Result<Secret, PwError> {
     if length == 0 || length > MAX_PASSWORD_LEN {
         return Err(PwError::InvalidInput {
@@ -544,11 +545,17 @@ pub fn generate_password(length: u32, charset: &str) -> Result<Secret, PwError> 
         });
     }
     let chars: Vec<char> = charset.chars().collect();
-    let unique: HashSet<&char> = chars.iter().collect();
+    let unique: HashSet<char> = chars.iter().copied().collect();
     if unique.len() < 2 {
         return Err(PwError::InvalidInput {
             what: "password charset",
             reason: "must contain at least 2 distinct characters".to_string(),
+        });
+    }
+    if unique.len() != chars.len() {
+        return Err(PwError::InvalidInput {
+            what: "password charset",
+            reason: "must not contain duplicate characters".to_string(),
         });
     }
     let mut rng =
@@ -795,6 +802,16 @@ mod tests {
                     what: "password charset",
                     ..
                 }
+            ));
+        }
+
+        for charset in ["aab", "😀😀😺"] {
+            assert!(matches!(
+                generate_password(8, charset).unwrap_err(),
+                PwError::InvalidInput {
+                    what: "password charset",
+                    reason,
+                } if reason == "must not contain duplicate characters"
             ));
         }
     }

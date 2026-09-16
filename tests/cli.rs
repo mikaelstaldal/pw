@@ -503,6 +503,12 @@ fn generate_rejects_bad_charset() {
         .assert()
         .failure()
         .stderr(contains("invalid password charset"));
+
+    pw(&vault)
+        .args(["generate", "--password-charset", "abca", "--show"])
+        .assert()
+        .failure()
+        .stderr(contains("must not contain duplicate characters"));
 }
 
 #[test]

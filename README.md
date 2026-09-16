@@ -36,8 +36,8 @@ pw list                      # show all entries
 Options for `add`, `update` and `generate`:
 
 - `--password-length <n>` — length of the generated password (default 16)
-- `--password-charset <chars>` — characters to generate from
-  (default: letters, digits and `-`)
+- `--password-charset <chars>` — characters to generate from; duplicate Unicode
+  scalar values are rejected (default: letters, digits and `-`)
 - `--input-password` — type the password instead of generating one
   (`add`/`update` only)
 - `--url <url>` — the site this entry is for, used by the Firefox integration

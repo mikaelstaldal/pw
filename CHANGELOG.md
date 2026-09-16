@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0 (2026-09-16)
+
+- Password generation now rejects custom charsets containing duplicate Unicode
+  scalar values, which would otherwise bias the generated passwords.
+
 ## 0.6.0 (2026-08-30)
 
 - Password entries can name an **HTTP authentication realm**, so a host running
